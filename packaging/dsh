@@ -6,6 +6,21 @@
 # a stale /usr/bin/node cannot shadow a newer one chosen via PATH.
 set -eu
 
+# Put the package's bundled pnpm ahead of anything else on PATH, so
+# `dsh plugin` and the Web Plugins page always use the pinned version instead
+# of a user install or a corepack download. The directory is resolved from this
+# launcher's own location, which also covers an extracted package root.
+self=$0
+case $self in
+  */*) ;;
+  *) self=$(command -v "$self" 2>/dev/null || printf '%s' "$self") ;;
+esac
+self_dir=$(CDPATH= cd -- "$(dirname -- "$self")" && pwd -P)
+if [ -d "$self_dir/../lib/dsh/bin" ]; then
+  PATH="$self_dir/../lib/dsh/bin:$PATH"
+  export PATH
+fi
+
 APP_ROOT="${DSH_APP_ROOT:-/usr/lib/dsh/app}"
 ENTRY="$APP_ROOT/node_modules/@deepseek-ai/dsh/lib/bin.js"
 

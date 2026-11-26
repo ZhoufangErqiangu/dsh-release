@@ -24,6 +24,10 @@ node --version                 # >= 24.9.0
 corepack enable && pnpm --version   # 需要 pnpm 11.28.5
 ```
 
+`make stage` 还会从 npm registry 下载固定版本的 pnpm tarball（按 sha256 校验）
+打进包里；registry 不可达时用 `PNPM_BASE_URL` 指向镜像。版本和校验值在
+`release.conf` 里。
+
 构建（不需要 root，也不需要 fakeroot）：
 
 ```bash
@@ -48,6 +52,10 @@ dsh-web-url          # 输出带一次性 launch token 的 URL，用浏览器打
 
 如果安装环境里没有可达的 systemd 用户会话（容器、镜像构建等），unit 仍会为安装
 用户启用，但服务会在该用户下次登录时启动；脚本会打印提示。
+
+插件管理开箱可用：包内自带固定版本的 pnpm（`/usr/lib/dsh/pnpm`），`dsh plugin`
+和 Web 的 Plugins 页都不需要另装 pnpm。插件本身是每个用户自己的状态，见下文
+「插件管理」。
 
 ## 版本锁定
 
@@ -126,12 +134,36 @@ journalctl --user -u dsh-web -f
 dsh-web-url
 ```
 
+## 插件管理（每个用户各自管理）
+
+插件是**用户状态**，不是安装内容：deb 只提供运行时（含固定版本的 pnpm），插件装进
+每个用户自己的 profile，不进 `/usr/local`，也不为插件单独打 deb。
+
+- 位置：`~/.dsh/profiles/web/`（`package.json`、`pnpm-lock.yaml`、`node_modules`、
+  `cordis.patch.yml`）；`dsh web` 用的就是这个 profile。
+- 入口：Web UI 的 **Plugins** 页，或 `dsh plugin --profile web ...`
+  （`add` / `list` / `remove`，参数原样转发给 pnpm）。
+- 包内自带 pnpm：`release.conf` 钉住版本和 tarball 的 sha256，装到
+  `/usr/lib/dsh/pnpm`，启动器和 user unit 都把 `/usr/lib/dsh/bin` 前置到 `PATH`。
+  用户不需要另装 pnpm，也不会被 corepack 的 “latest” 带偏。
+- CLI 装完用 `systemctl --user restart dsh-web` 让服务加载；Web 的 Plugins 页会
+  直接报告改动是已生效还是需要重启。
+- 升级/卸载 deb 不碰 `~/.dsh`；回滚就是备份 profile 目录（锁文件钉住版本）。
+- 不要 `sudo dsh plugin`：profile 属于用户。插件以该用户权限运行、能读该用户的
+  凭据，这是“各自装”的信任边界；需要收紧就用内网 registry。
+- 如果以后要改成整机预置（所有用户同一套插件、离线），做法是把 bundle 装到
+  `/usr/lib/dsh/bundles/<name>` 再用 `dsh plugin --profile web add file:...`
+  激活，或直接编进安装闭包；仍然不要写 `/usr/local` 或 app 自己的
+  `node_modules`。
+
 ## 包内布局
 
 ```
 /usr/bin/dsh                                      启动器（查找 Node >= 24.9）
 /usr/bin/dsh-web-url                              打印当前带 token 的 Web UI 地址
 /usr/lib/dsh/app/                                 生产安装（packed workspace 闭包）
+/usr/lib/dsh/bin/pnpm                             包内 pnpm（插件管理用）
+/usr/lib/dsh/pnpm/                                固定版本的 pnpm 本体
 /usr/lib/systemd/user/dsh-web.service             用户服务
 /usr/share/man/man1/dsh.1.gz
 /usr/share/doc/deepseek-harness/
@@ -148,9 +180,9 @@ dsh-web-url
 make              # 默认目标：完整构建 + 验证
 make fetch        # 取锁定源码，生成 build/source.env
 make build        # pnpm install + build:artifacts --profile official
-make stage        # 打包 workspace 闭包并组装 rootfs
+make stage        # 打包 workspace 闭包、包内 pnpm 并组装 rootfs
 make package      # dpkg-deb 生成 dist/*.deb
-make verify       # 控制字段、布局、unit、脚本语法、真实启动冒烟测试
+make verify       # 控制字段、布局、unit、脚本语法、pnpm 与真实启动冒烟测试
 make clean        # 删 build/ dist/，保留源码和依赖缓存
 make distclean    # 再删 .work/（源码、node_modules、pnpm store）
 make print-config # 当前 pin 和包名
@@ -163,12 +195,15 @@ make print-config # 当前 pin 和包名
 `make verify` 不安装包，而是解包后检查：
 
 - control 的版本、架构、`nodejs (>= 24.9.0)`、`libc6`、`Conflicts: dsh`、
-  `X-DSH-Source-Commit`；
-- `/usr/bin/dsh`、Web dist、文档、man page 是否齐全；
-- **只存在用户 unit**，没有 root 系统 unit；unit 中没有 `User=`，带 `--no-open`；
+  `X-DSH-Source-Commit`、`X-DSH-Bundled-Pnpm`；
+- `/usr/bin/dsh`、Web dist、文档、man page、包内 pnpm 是否齐全；
+- **只存在用户 unit**，没有 root 系统 unit；unit 中没有 `User=`，带 `--no-open`，
+  `PATH` 前置了 `/usr/lib/dsh/bin`；
 - postinst/prerm/postrm 的 `sh -n`；
 - 在 `systemd-analyze` 可用时对 unit 做离线校验（部分 rootfs 下只告警）；
 - 用解包出的 launcher 运行 `dsh --version`；
+- 包内 pnpm 能运行并报告 `PNPM_VERSION`；在完全没有外部 pnpm 的干净 `PATH` 下
+  `dsh plugin --profile ... list` 仍能跑通（初始化 profile + 真实 spawn pnpm）；
 - 真实启动 `dsh web --port 0`，验证未带 token 时 401、带 launch token 后拿到
   cookie 并返回 200，再用 cookie 访问干净地址仍为 200；
 - 用解包出的 launcher 在受限 PATH（模拟 systemd 用户服务的环境）下启动；
@@ -197,8 +232,12 @@ postinst 为用户写 enable 链接、`dpkg -r` 停止/禁用并保留 `~/.dsh`�
 - **包名不是 `dsh`**：Debian/Ubuntu 已有同名的 `dsh`（distributed shell）并占用
   `/usr/bin/dsh`。本包名 `deepseek-harness`，声明 `Conflicts`/`Replaces: dsh`，
   命令仍是 `dsh`。
-- **插件管理需要 pnpm**：`dsh plugin` 会把参数转发给 pnpm；pnpm 不随包安装，只列
-  为 `Suggests`。基础 Web 使用不需要 pnpm。
+- **插件管理自带 pnpm**：`dsh plugin` 和 Plugins 页会把参数交给 pnpm。包内固定
+  `PNPM_VERSION`（与上游 `packageManager` 对齐）并校验 tarball 的 sha256，装在
+  `/usr/lib/dsh/pnpm`，deb 体积约增加 4 MB（pnpm 解包后 24 MB），并关掉 pnpm 的
+  升级提示。这样不依赖 Ubuntu 源（24.04 没有 pnpm 包），也不会被 corepack 拉来的
+  “latest” 带偏。插件本身仍是每个用户的 profile 状态，不打进 deb，也不放
+  `/usr/local`。
 - **构建需要网络**：GitHub 取源码，npm registry 安装依赖。生产安装的外部依赖版本
   被钉在 `make build` 时实际安装的版本（overrides），避免二次解析漂移。
 - **原生工具链**：完整 native 集需要 `musl-gcc`（静态 Landlock launcher 和 musl
@@ -217,14 +256,15 @@ postinst 为用户写 enable 链接、`dpkg -r` 停止/禁用并保留 `~/.dsh`�
 ```
 release.conf                 版本/包名/架构唯一配置
 Makefile                     make 入口
-packaging/                   control 模板、maintainer 脚本、user unit、启动器、man、文档
+packaging/                   control 模板、maintainer 脚本、user unit、启动器、pnpm 包装器、man、文档
 scripts/fetch-source.sh      锁定源码
 scripts/build-source.sh      pnpm install + build:artifacts --profile official
 scripts/stage-runtime.mjs    packed workspace 闭包 -> 生产安装
+scripts/prepare-pnpm.sh      下载/校验/解包固定版本的 pnpm
 scripts/stage-rootfs.sh      组装 rootfs + control + 文档
 scripts/package.sh           dpkg-deb
-scripts/verify-deb.sh        解包检查 + Web 冒烟测试
-scripts/ci-install-smoke.sh  CI 安装后检查（用户 unit + 认证流）
+scripts/verify-deb.sh        解包检查 + pnpm/Web 冒烟测试
+scripts/ci-install-smoke.sh  CI 安装后检查（用户 unit + pnpm + 认证流）
 .github/workflows/build-deb.yml
                              build / install-test / release 工作流
 .work/                       源码、node_modules、pnpm store（gitignore）
@@ -249,6 +289,8 @@ deb 依赖），再用 `dpkg`/apt 安装本包，并运行 `scripts/ci-install-s
 
 - 断言 unit 只在 `/usr/lib/systemd/user`，不存在 root 系统 unit；
 - 断言安装用户的 `default.target.wants` 下已 enable；
+- 断言包内 pnpm 的版本与 `BUILD-INFO.json` 一致，且 `dsh plugin` 在没有外部 pnpm
+  的情况下能跑通；
 - 如果有可用的 systemd 用户会话，通过 `dsh-web-url` 取地址；否则直接运行包内
   ExecStart，并验证 401 → token 303 → cookie 200 的认证流。
 

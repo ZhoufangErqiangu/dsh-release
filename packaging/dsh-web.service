@@ -11,7 +11,10 @@ Documentation=https://github.com/deepseek-ai/deepseek-harness
 [Service]
 Type=simple
 WorkingDirectory=%h
-Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# /usr/lib/dsh/bin carries the package's pinned pnpm, used by `dsh plugin` and
+# the Web Plugins page. The launcher prepends it as well; listing it here keeps
+# the service environment explicit.
+Environment=PATH=/usr/lib/dsh/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 # Optional per-user settings, e.g. DEEPSEEK_API_KEY=..., DSH_HOME=...
 EnvironmentFile=-%h/.config/dsh/web.env
 # Change the bind address or port with: systemctl --user edit dsh-web

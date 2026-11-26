@@ -1,0 +1,35 @@
+#!/bin/sh
+# pnpm — the package's bundled package manager, used by `dsh plugin` and the
+# Web Plugins page.
+#
+# The real installation lives beside this wrapper in ../pnpm; locating it from
+# this script's own directory keeps extracted-root smoke tests working and
+# avoids any assumption about DSH_APP_ROOT. The wrapper prefers DSH_NODE (set
+# by callers that already chose a Node for dsh), then any node on PATH.
+set -eu
+
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+entry="$here/../pnpm/bin/pnpm.mjs"
+
+if [ ! -f "$entry" ]; then
+  echo "pnpm: bundled installation is incomplete: $entry is missing" >&2
+  echo "pnpm: reinstall the deepseek-harness package" >&2
+  exit 127
+fi
+
+node_bin="${DSH_NODE:-}"
+if [ -z "$node_bin" ]; then
+  node_bin=$(command -v node 2>/dev/null || true)
+fi
+if [ -z "$node_bin" ]; then
+  echo "pnpm: Node.js was not found on PATH and DSH_NODE is unset" >&2
+  exit 127
+fi
+
+# The version is pinned by the package, so pnpm must not advertise a newer
+# release (and offline hosts must not wait on that check). An explicit user
+# setting still wins.
+npm_config_update_notifier="${npm_config_update_notifier:-false}"
+export npm_config_update_notifier
+
+exec "$node_bin" "$entry" "$@"

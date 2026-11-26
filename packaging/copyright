@@ -29,3 +29,12 @@ License: see usr/share/doc/deepseek-harness/THIRD_PARTY_NOTICES.md
  The production installation redistributes third-party npm packages. Their
  licenses, versions, and notices are enumerated in THIRD_PARTY_NOTICES.md at
  the upstream commit recorded in BUILD-INFO.json.
+
+Files: usr/lib/dsh/pnpm/*
+Copyright: 2015-2016 Rico Sta. Cruz and other contributors
+           2016-2025 Zoltan Kochan and other contributors
+License: MIT
+Comment: pnpm is bundled so `dsh plugin` works without a separate install; the
+ exact tarball is pinned by sha256 in release.conf. The complete license text
+ is installed as usr/lib/dsh/pnpm/LICENSE, and pnpm's own bundled third-party
+ dependencies keep their licenses under usr/lib/dsh/pnpm/dist/node_modules/.

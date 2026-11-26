@@ -6,6 +6,8 @@ What this package installs
   /usr/bin/dsh                       launcher (requires system Node.js >= 24.9)
   /usr/bin/dsh-web-url               prints the current tokenized Web UI URL
   /usr/lib/dsh/app/                  pinned DSH production installation
+  /usr/lib/dsh/bin/pnpm              bundled pnpm used by plugin management
+  /usr/lib/dsh/pnpm/                 the pinned pnpm installation itself
   /usr/lib/systemd/user/dsh-web.service
                                      systemd *user* unit for the Web UI
   /usr/share/doc/deepseek-harness/   this note, copyright, third-party notices
@@ -83,7 +85,38 @@ CLI usage
   dsh web                 start the Web UI in the foreground
   dsh web --help          Web UI flags (--host, --port, --no-open, ...)
   dsh --version           version
-  dsh plugin --help       plugin management (needs pnpm on PATH)
+  dsh plugin --help       plugin management (uses the bundled pnpm)
+
+Plugins (per user)
+------------------
+Plugins are not installed by apt. They belong to each user and live in that
+user's profile directory:
+
+  ~/.dsh/profiles/web/package.json      installed bundle dependencies
+  ~/.dsh/profiles/web/pnpm-lock.yaml    exact versions
+  ~/.dsh/profiles/web/node_modules/     plugin packages
+  ~/.dsh/profiles/web/cordis.patch.yml  the user's own overrides
+
+The package bundles a pinned pnpm under /usr/lib/dsh and puts
+/usr/lib/dsh/bin first on PATH (through both the launcher and
+dsh-web.service), so no separate pnpm install is needed:
+
+  dsh plugin --profile web add <package>
+  dsh plugin --profile web list
+  dsh plugin --profile web remove <package>
+  systemctl --user restart dsh-web
+
+The same operations are available under Plugins in the Web UI. That page
+manages the running profile and reports whether a change applied live or
+needs the restart above.
+
+Do not run these commands with sudo: the profile belongs to the user, and
+root-owned files under ~/.dsh break the user service. Plugins execute inside
+that user's Host process with that user's privileges and can read its stored
+credentials, so install only bundles you trust.
+
+Upgrading or removing deepseek-harness never touches ~/.dsh, so plugins,
+profiles, and lockfiles survive; `apt purge` keeps them as well.
 
 User data
 ---------

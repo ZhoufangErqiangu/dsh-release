@@ -20,6 +20,19 @@ dpkg-query -W -f='${Status}' deepseek-harness 2>/dev/null | grep -q 'install ok 
   || fail "deepseek-harness is not installed"
 pass "dsh --version: $(dsh --version)"
 
+# Plugin management must work without a separately installed pnpm: the package
+# bundles one, the launcher puts it first on PATH, and the version recorded in
+# BUILD-INFO.json is what actually runs.
+plugin_home="$(mktemp -d)"
+pnpm_version="$(node -p "require('/usr/share/doc/deepseek-harness/BUILD-INFO.json').bundled.pnpm")"
+[ -n "$pnpm_version" ] || fail "BUILD-INFO.json does not record the bundled pnpm"
+[ "$(/usr/lib/dsh/bin/pnpm --version)" = "$pnpm_version" ] || fail "the bundled pnpm does not report $pnpm_version"
+DSH_HOME="$plugin_home" dsh plugin --profile ci-smoke list >"$plugin_home/plugin.log" 2>&1 || {
+  cat "$plugin_home/plugin.log" >&2
+  fail "dsh plugin cannot run the bundled pnpm"
+}
+pass "bundled pnpm $pnpm_version runs; dsh plugin uses it"
+
 [ -f "/usr/lib/systemd/user/$UNIT" ] || fail "user unit missing at /usr/lib/systemd/user/$UNIT"
 [ ! -e "/lib/systemd/system/$UNIT" ] || fail "root system unit present at /lib/systemd/system/$UNIT"
 [ ! -e "/usr/lib/systemd/system/$UNIT" ] || fail "root system unit present at /usr/lib/systemd/system/$UNIT"
@@ -36,7 +49,7 @@ cleanup() {
     kill "$pid" >/dev/null 2>&1 || true
     wait "$pid" 2>/dev/null || true
   fi
-  rm -rf "$work"
+  rm -rf "$work" "$plugin_home"
 }
 trap cleanup EXIT
 

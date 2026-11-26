@@ -141,7 +141,7 @@ jobs:
           cat build/source.env
           dpkg-deb -f dist/*.deb \
             Package Version Architecture Depends Conflicts \
-            X-DSH-Source-Ref X-DSH-Source-Commit
+            X-DSH-Source-Ref X-DSH-Source-Commit X-DSH-Bundled-Pnpm
           ( cd dist && sha256sum -c ./*.sha256 )
 
       - name: Upload the package

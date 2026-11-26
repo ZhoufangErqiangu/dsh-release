@@ -5,7 +5,6 @@ Maintainer: @MAINTAINER@
 Installed-Size: @INSTALLED_SIZE@
 Depends: nodejs (>= @NODE_MIN@), libc6 (>= 2.35)
 Recommends: git
-Suggests: pnpm
 Section: utils
 Priority: optional
 Homepage: https://github.com/deepseek-ai/deepseek-harness
@@ -13,6 +12,7 @@ Conflicts: dsh
 Replaces: dsh
 X-DSH-Source-Ref: @DSH_REF@
 X-DSH-Source-Commit: @DSH_COMMIT@
+X-DSH-Bundled-Pnpm: @PNPM_VERSION@
 Description: DeepSeek Harness Web UI and CLI (dsh)
  DeepSeek Harness is an open-source agent harness from DeepSeek AI, built on
  an everything-is-a-plugin architecture (Cordis).
@@ -24,6 +24,11 @@ Description: DeepSeek Harness Web UI and CLI (dsh)
  .
  The package depends on the system Node.js (>= 24.9.0); it does not bundle a
  runtime. On Ubuntu 24.04, install Node 24 from NodeSource first.
+ .
+ Plugin management (`dsh plugin` and the Web Plugins page) uses the bundled
+ pnpm @PNPM_VERSION@ under /usr/lib/dsh/pnpm; no separate pnpm install is
+ needed. Plugins themselves are per user and live in ~/.dsh, not in this
+ package.
  .
  The package name is deepseek-harness because the unrelated Debian/Ubuntu
  package `dsh` (distributed shell) already owns that name and /usr/bin/dsh;

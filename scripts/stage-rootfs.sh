@@ -56,6 +56,15 @@ install -m 0644 "$ROOT/packaging/dsh-web.service" "$rootfs/usr/lib/systemd/user/
 install -m 0644 "$ROOT/packaging/dsh.1" "$rootfs/usr/share/man/man1/dsh.1"
 gzip -9n "$rootfs/usr/share/man/man1/dsh.1"
 
+# Ship one pinned pnpm: `dsh plugin` and the Web Plugins page spawn `pnpm`, and
+# Ubuntu 24.04 has no package for it. The launcher and the user unit put
+# /usr/lib/dsh/bin first on PATH.
+log "staging the bundled pnpm"
+"$ROOT/scripts/prepare-pnpm.sh"
+install -d "$rootfs/usr/lib/dsh/bin" "$rootfs/usr/lib/dsh/pnpm"
+cp -a "$WORK/pnpm/package/." "$rootfs/usr/lib/dsh/pnpm/"
+install -m 0755 "$ROOT/packaging/pnpm" "$rootfs/usr/lib/dsh/bin/pnpm"
+
 docroot="$rootfs/usr/share/doc/$DEB_PACKAGE"
 install -m 0644 "$ROOT/packaging/copyright" "$docroot/copyright"
 install -m 0644 "$ROOT/packaging/README.Debian" "$docroot/README.Debian"
@@ -63,7 +72,7 @@ gzip -9n "$docroot/README.Debian"
 install -m 0644 "$SRC/THIRD_PARTY_NOTICES.md" "$docroot/THIRD_PARTY_NOTICES.md"
 printf '%s\n' "$DSH_COMMIT" > "$docroot/source-commit"
 
-export DEB_PACKAGE DEB_FULL_VERSION DEB_ARCH DSH_REPO_URL DSH_REF DSH_COMMIT DSH_VERSION SOURCE_DATE_EPOCH
+export DEB_PACKAGE DEB_FULL_VERSION DEB_ARCH DSH_REPO_URL DSH_REF DSH_COMMIT DSH_VERSION SOURCE_DATE_EPOCH PNPM_VERSION
 "$NODE" - "$docroot/BUILD-INFO.json" <<'EOF'
 const { writeFileSync } = require('node:fs')
 const out = process.argv[2]
@@ -83,6 +92,9 @@ const info = {
     node: process.version,
     platform: `${process.platform}/${process.arch}`,
   },
+  bundled: {
+    pnpm: process.env.PNPM_VERSION,
+  },
   service: {
     kind: 'systemd-user',
     unit: '/usr/lib/systemd/user/dsh-web.service',
@@ -96,7 +108,8 @@ EOF
   printf '%s (%s) unstable; urgency=medium\n\n' "$DEB_PACKAGE" "$DEB_FULL_VERSION"
   printf '  * Package upstream %s (%s), built from source.\n' "$DSH_REF" "$DSH_COMMIT"
   printf '  * Install dsh-web as a systemd user service; no root system service\n'
-  printf '    is installed or enabled by the package.\n\n'
+  printf '    is installed or enabled by the package.\n'
+  printf '  * Bundle pnpm %s so plugin management needs no separate install.\n\n' "$PNPM_VERSION"
   printf ' -- %s  %s\n' "$DEB_MAINTAINER" "$(LC_ALL=C date -R -u -d "@$SOURCE_DATE_EPOCH")"
 } > "$docroot/changelog.Debian"
 gzip -9n "$docroot/changelog.Debian"
@@ -113,6 +126,7 @@ sed \
   -e "s|@NODE_MIN@|$NODE_MIN|g" \
   -e "s|@DSH_REF@|$DSH_REF|g" \
   -e "s|@DSH_COMMIT@|$DSH_COMMIT|g" \
+  -e "s|@PNPM_VERSION@|$PNPM_VERSION|g" \
   "$ROOT/packaging/control.in" > "$rootfs/DEBIAN/control"
 for script in postinst prerm postrm; do
   install -m 0755 "$ROOT/packaging/$script" "$rootfs/DEBIAN/$script"

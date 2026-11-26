@@ -33,7 +33,9 @@ grep -q "^Depends: .*nodejs (>= $NODE_MIN)" <<<"$info" || fail "missing nodejs (
 grep -q "^Depends: .*libc6" <<<"$info" || fail "missing libc6 dependency"
 grep -q "^Conflicts: dsh$" <<<"$info" || fail "missing Conflicts: dsh (the unrelated Ubuntu package)"
 grep -q "^X-DSH-Source-Commit: $DSH_COMMIT$" <<<"$info" || fail "source commit is not recorded in control"
-pass "control metadata (version, arch, node dependency, source commit)"
+grep -q "^X-DSH-Bundled-Pnpm: $PNPM_VERSION$" <<<"$info" || fail "bundled pnpm version is not recorded in control"
+if grep -q "^Suggests: pnpm$" <<<"$info"; then fail "control still suggests pnpm although the package bundles it"; fi
+pass "control metadata (version, arch, node dependency, source commit, bundled pnpm)"
 
 rm -rf "$BUILD/verify"
 mkdir -p "$BUILD/verify/root" "$BUILD/verify/home"
@@ -51,6 +53,9 @@ root="$BUILD/verify/root"
 [ -f "$root/usr/share/doc/$DEB_PACKAGE/README.Debian.gz" ] || fail "README.Debian.gz is missing"
 [ -f "$root/usr/share/doc/$DEB_PACKAGE/THIRD_PARTY_NOTICES.md" ] || fail "third-party notices are missing"
 [ -f "$root/usr/share/doc/$DEB_PACKAGE/BUILD-INFO.json" ] || fail "BUILD-INFO.json is missing"
+[ -x "$root/usr/lib/dsh/bin/pnpm" ] || fail "the bundled pnpm wrapper is missing or not executable"
+[ -f "$root/usr/lib/dsh/pnpm/bin/pnpm.mjs" ] || fail "the bundled pnpm entry point is missing"
+[ -f "$root/usr/lib/dsh/pnpm/LICENSE" ] || fail "the bundled pnpm license is missing"
 pass "payload layout and documentation"
 
 unit="$root/usr/lib/systemd/user/dsh-web.service"
@@ -58,8 +63,9 @@ grep -q '^WantedBy=default.target$' "$unit" || fail "unit is not enabled by defa
 grep -q '^ExecStart=/usr/bin/dsh web' "$unit" || fail "unit does not start dsh web"
 grep -q '^User=' "$unit" && fail "user unit must not set User=" || true
 grep -q '^EnvironmentFile=-%h/.config/dsh/web.env$' "$unit" || fail "unit does not read the per-user env file"
+grep -q '^Environment=PATH=/usr/lib/dsh/bin:' "$unit" || fail "unit PATH does not carry the bundled pnpm"
 grep -q -- '--no-open' "$unit" || fail "unit would try to open a browser under systemd"
-pass "user unit content (no User=, no root paths, --no-open)"
+pass "user unit content (no User=, no root paths, --no-open, bundled pnpm on PATH)"
 
 dpkg-deb --control "$deb" "$BUILD/verify/control"
 for script in postinst prerm postrm; do
@@ -96,6 +102,30 @@ grep -q "^$DSH_VERSION$" "$BUILD/verify/version.log" || {
   fail "launcher reported an unexpected version"
 }
 pass "packaged launcher runs dsh $DSH_VERSION"
+
+log "smoke: bundled pnpm $PNPM_VERSION"
+DSH_NODE="$NODE" "$root/usr/lib/dsh/bin/pnpm" --version >"$BUILD/verify/pnpm.log" 2>&1 || {
+  cat "$BUILD/verify/pnpm.log" >&2
+  fail "the bundled pnpm could not run"
+}
+grep -qx "$PNPM_VERSION" "$BUILD/verify/pnpm.log" || {
+  cat "$BUILD/verify/pnpm.log" >&2
+  fail "the bundled pnpm reported an unexpected version"
+}
+pass "bundled pnpm $PNPM_VERSION runs"
+
+# The launcher prepends the bundled pnpm, so a clean PATH with no pnpm at all
+# must still let `dsh plugin` work. This exercises profile initialization, the
+# wrapper, and the real pnpm spawn end to end.
+log "smoke: dsh plugin uses the bundled pnpm"
+mkdir -p "$BUILD/verify/plugin-home"
+env -i HOME="$BUILD/verify/home" PATH=/usr/bin:/bin DSH_NODE="$NODE" \
+  DSH_APP_ROOT="$root/usr/lib/dsh/app" DSH_HOME="$BUILD/verify/plugin-home" \
+  "$root/usr/bin/dsh" plugin --profile verify list >"$BUILD/verify/plugin.log" 2>&1 || {
+    cat "$BUILD/verify/plugin.log" >&2
+    fail "dsh plugin could not run against the bundled pnpm"
+  }
+pass "dsh plugin runs with no pnpm outside the package"
 
 log "smoke: dsh web boots and serves the Web UI"
 mkdir -p "$BUILD/verify/dsh-home" "$BUILD/verify/workspace"
