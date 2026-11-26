@@ -97,22 +97,21 @@ cat /usr/share/doc/deepseek-harness/BUILD-INFO.json
 - `alex.<N>` 是本仓库的构建标识，`N` 由已发布 tag 全局递增；
 - Debian 版本是同一信息的 Debian 写法：`0.2.2~rc.5-alex.1`（`-` 变 `~`）。
 
-推进版本、构建、写回 `release.conf`、commit、打 tag 只用一个脚本：
+推进版本、写回 `release.conf`、commit、打 tag、push 由一个脚本处理；**构建交给 CI**：
 
 ```bash
 scripts/release.sh --dry-run    # 只解析并打印下一个版本（会刷新 .work/ 源码缓存）
-scripts/release.sh              # 本地构建 + commit + tag（不 push）
-scripts/release.sh --push       # 一步完成构建 + commit + tag + push，CI 发布
+scripts/release.sh              # 推进版本 + commit + tag + push，CI 自动构建发布
+scripts/release.sh --no-push    # 只在本地 commit + tag，稍后手动 push
 ```
 
 换上游 pin 也用同一个入口（`N` 不会重置）：
 
 ```bash
-scripts/release.sh --dsh-ref dsh-v0.2.3-alpha.2 --ci
+scripts/release.sh --dsh-ref dsh-v0.2.3-alpha.2
 ```
 
-如果已经用默认模式在本地建好 tag，之后只想发布，直接 push 那个 tag 即可；不要
-再跑 `scripts/release.sh --push`，它会计算下一个 `N`：
+如果用了 `--no-push`，稍后补推即可（不要重跑脚本，否则会计算下一个 `N`）：
 
 ```bash
 git push origin v0.2.2-rc.5-alex.1 && git push origin main
@@ -122,7 +121,7 @@ git push origin v0.2.2-rc.5-alex.1 && git push origin main
 脚本都读该文件，脚本会拒绝这种覆盖）。
 
 版本规则、tag 校验、CI 流程和常见故障见 [`docs/release.md`](docs/release.md)。
-如果只想临时试构建，仍可直接覆盖变量：
+如果只想临时试构建，仍可直接覆盖变量（需要本机有 pnpm 11.28.5）：
 
 ```bash
 make DSH_REF=dsh-v0.2.3-alpha.2 DEB_REVISION=alex.7
@@ -219,7 +218,7 @@ dsh-web-url
 
 ```bash
 make              # 默认目标：完整构建 + 验证（复现 release.conf 记录的最新版本）
-make release      # 推进版本、构建、commit、打 tag（等价于 scripts/release.sh）
+make release      # 推进版本、commit、打 tag、push（CI 构建发布）
 make version      # 显示当前源码 pin、发布 tag 和 deb 版本
 make fetch        # 取锁定源码，生成 build/source.env
 make build        # pnpm install + build:artifacts --profile official
@@ -301,7 +300,7 @@ release.conf                 版本/包名/架构唯一配置
 Makefile                     make 入口
 docs/release.md              发布版本规则、脚本和 CI 流程
 packaging/                   control 模板、maintainer 脚本、user unit、启动器、pnpm 包装器、man、文档
-scripts/release.sh           推进版本：算下一个 alex.N、构建、写回配置、commit、tag、可选 push
+scripts/release.sh           推进版本：算下一个 alex.N、写回配置、commit、tag、push（CI 构建）
 scripts/check-release-tag.sh 校验发布 tag 与 release.conf/源码/构建记录一致
 scripts/release-manifest.sh  生成 dist/release.json
 scripts/fetch-source.sh      锁定源码
@@ -332,10 +331,10 @@ dist/                        .deb、sha256、release.json（gitignore）
 发布流程是：
 
 ```bash
-scripts/release.sh --push
+scripts/release.sh
 ```
 
-脚本会算出 `vX.Y.Z-alex.N`、完整构建并验证、commit、打 tag，然后 push tag 和分支；
+脚本只负责版本、`release.conf` commit、打 tag 和 push，**不做任何构建**。
 CI 收到 tag 后先运行 `scripts/check-release-tag.sh`，确认 tag 与 `release.conf` 的
 revision、上游 `package.json` 版本、`build/source.env` 全部一致，再构建。
 构建完成后再次校验 `dpkg-deb` 的 `Version`、`dist/release.json` 的 `releaseTag`

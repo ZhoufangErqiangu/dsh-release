@@ -2,7 +2,8 @@
 #
 #   make            fetch -> build -> stage -> package -> verify
 #   make deb        same as the default target
-#   make release    advance the release version, build, commit and tag it
+#   make release    advance the release version, commit, tag and push it
+#                   (GitHub Actions builds and publishes from the tag)
 #   make check      re-run structural checks and the runtime smoke test
 #   make version    show the pinned source and the release version
 #   make clean      remove build/ and dist/ (keeps the fetched source and pnpm store)

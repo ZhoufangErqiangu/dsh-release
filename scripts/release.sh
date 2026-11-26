@@ -1,23 +1,24 @@
 #!/usr/bin/env bash
-# Cut a new release: advance the build number, rebuild the .deb from the pinned
-# upstream source, record the version in release.conf, commit it, and tag the
-# release as v<upstream-version>-<id>.<N>.
+# Advance the release version, record it in release.conf, commit it, create the
+# annotated tag, and push the tag and branch. This script never builds: the
+# pushed tag is the trigger for build-deb.yml, which builds, verifies, installs
+# and publishes the package.
 #
 # The version always comes from the pinned upstream checkout, never from a
 # hand-edited string:
 #
 #   upstream dsh-v0.2.2-rc.5   ->  0.2.2-rc.5   (package.json)
 #   release tag                ->  v0.2.2-rc.5-alex.1
-#   Debian version             ->  0.2.2~rc.5-alex.1
+#   Debian version by CI       ->  0.2.2~rc.5-alex.1
 #
 # N is one greater than the highest v*-<id>.<N> tag in this repository, so a
 # build number is never reused, even after the upstream pin moves.
 #
 # Typical use:
-#   scripts/release.sh                     # build + commit + tag, locally
-#   scripts/release.sh --push              # ... and push, so CI publishes it
-#   scripts/release.sh --dsh-ref dsh-v0.2.3 --ci
-#                                          # move the pin, tag, push; CI builds
+#   scripts/release.sh                     # bump + commit + tag + push; CI builds
+#   scripts/release.sh --dsh-ref dsh-v0.2.3
+#                                          # move the pin and release it
+#   scripts/release.sh --no-push           # prepare the tag locally, push later
 #   scripts/release.sh --dry-run           # show the next version, no tracked change
 
 set -euo pipefail
@@ -28,22 +29,21 @@ usage() {
   cat <<'EOF'
 usage: scripts/release.sh [options]
 
-Advance the release version, build it, and tag it. The release version is
-v<upstream-version>-<DSH_RELEASE_ID>.<N>, where <upstream-version> is read from
-the pinned DSH checkout and N is the next repository-wide build number.
+Advance the release version, commit release.conf, create the annotated tag, and
+push the tag and branch. The push triggers GitHub Actions, which builds and
+publishes the .deb; this script deliberately does no build.
+
+The release version is v<upstream-version>-<DSH_RELEASE_ID>.<N>, where
+<upstream-version> is read from the pinned DSH checkout and N is the next
+repository-wide build number.
 
 options:
   --dsh-ref REF         move the upstream pin to REF (tag or full 40-hex commit)
                         before releasing; written to release.conf on success
   --build-number N      force build number N (must be greater than every
                         existing v*-<id>.<N> tag)
-  --no-build            do not run make; only advance release.conf and tag
-  --push                push the release commit and tag to origin after building
-  --ci                  shorthand for --no-build --push (GitHub Actions builds)
+  --no-push             commit and tag locally, but do not push
   --dry-run             resolve and print the plan; change no tracked file
-  --no-commit           write release.conf but leave it uncommitted; must be
-                        combined with --no-tag (useful for a local trial build)
-  --no-tag              do not create the annotated git tag
   -h, --help            show this help
 
 environment:
@@ -92,9 +92,7 @@ set_release_conf_values() {
   conf_tmp=""
 }
 
-# assert_tag_available TAG fails when the tag exists locally or on origin. It
-# runs before the build and again after it, so a tag created during a long build
-# cannot be silently overwritten.
+# assert_tag_available TAG fails when the tag exists locally or on origin.
 assert_tag_available() {
   local tag="$1" remote_tags
   if git -C "$ROOT" rev-parse -q --verify "refs/tags/$tag" >/dev/null 2>&1; then
@@ -111,10 +109,7 @@ assert_tag_available() {
 
 dsh_ref_override=""
 build_number=""
-do_build=1
-do_commit=1
-do_tag=1
-do_push=0
+do_push=1
 dry_run=0
 branch="${RELEASE_BRANCH:-main}"
 
@@ -132,23 +127,15 @@ while [ $# -gt 0 ]; do
       shift 2
       ;;
     --build-number=*) build_number="${1#*=}"; shift ;;
-    --no-build)       do_build=0; shift ;;
-    --no-commit)      do_commit=0; shift ;;
-    --no-tag)         do_tag=0; shift ;;
-    --push)           do_push=1; shift ;;
-    --ci)             do_build=0; do_push=1; shift ;;
+    --no-push)        do_push=0; shift ;;
     --dry-run)        dry_run=1; shift ;;
     -h|--help)        usage; exit 0 ;;
+    --ci|--push)      die "this script now always only tags and pushes; run scripts/release.sh without $1 (CI builds from the tag)" ;;
+    --no-build)       die "this script no longer builds; --no-build is the default, run scripts/release.sh" ;;
+    --no-commit|--no-tag) die "this script always commits release.conf and creates the tag; use --dry-run to preview" ;;
     *) die "unknown argument: $1 (see --help)" ;;
   esac
 done
-
-if [ "$do_commit" -eq 0 ] && { [ "$do_tag" -eq 1 ] || [ "$do_push" -eq 1 ]; }; then
-  die "--no-commit cannot be combined with tagging or pushing"
-fi
-if [ "$do_tag" -eq 0 ] && [ "$do_push" -eq 1 ]; then
-  die "--no-tag cannot be combined with --push"
-fi
 
 require_cmd git
 require_cmd node
@@ -164,8 +151,7 @@ current_branch="$(git -C "$ROOT" symbolic-ref --quiet --short HEAD || true)"
 [ "$current_branch" = "$branch" ] || die "releases are cut from '$branch' (currently '$current_branch'); set RELEASE_BRANCH to override"
 git -C "$ROOT" var GIT_AUTHOR_IDENT >/dev/null 2>&1 || die "git user.name and user.email are not configured"
 
-# Fail before the expensive build (and before creating a tag) when publishing
-# would not fast-forward: a commit made during the build is handled later.
+# Fail before changing anything when publishing would not fast-forward.
 if [ "$do_push" -eq 1 ]; then
   git -C "$ROOT" fetch --quiet origin "$branch" || die "could not fetch origin $branch; check the remote and retry"
   git -C "$ROOT" merge-base --is-ancestor "$(git -C "$ROOT" rev-parse FETCH_HEAD)" HEAD \
@@ -182,8 +168,6 @@ if printf '%s' "$new_ref" | grep -Eq '^[0-9a-f]{7,39}$'; then
 fi
 
 # Resolve the next build number from the tags published by earlier releases.
-# Fetching can fail offline; the tag-existence check below still protects against
-# reusing a number that origin already has.
 export GIT_TERMINAL_PROMPT=0
 remote="$(git -C "$ROOT" remote get-url origin 2>/dev/null || true)"
 if [ -n "$remote" ]; then
@@ -215,10 +199,10 @@ else
 fi
 revision="$id.$next_build"
 
-# Resolve the upstream version/commit before touching release.conf. This is the
-# same pin validation the build runs later, so a bad ref fails before any
-# tracked file changes.
-log "resolving upstream source: $new_ref"
+# Resolve the upstream version/commit from the pinned source. This validates the
+# immutable ref and gives the tag its upstream-version component; it does not
+# build anything.
+log "resolving upstream version: $new_ref"
 DSH_REF="$new_ref" DEB_REVISION="$revision" "$ROOT/scripts/fetch-source.sh"
 load_source_env
 
@@ -227,15 +211,11 @@ tag="$(release_tag "$DSH_VERSION" "$revision")"
 [ "${DSH_RELEASE_TAG:-}" = "$tag" ] || die "build/source.env records release '${DSH_RELEASE_TAG:-<none>}', expected '$tag'"
 deb_version="${DEB_UPSTREAM_VERSION}-${revision}"
 [ "$deb_version" = "$DEB_FULL_VERSION" ] || die "build/source.env has deb version '$DEB_FULL_VERSION', expected '$deb_version'"
-deb_name="${DEB_PACKAGE}_${deb_version}_${DEB_ARCH}.deb"
 
 assert_tag_available "$tag"
 
-actions="write release.conf"
-[ "$do_build" -eq 1 ] && actions="$actions, build"
-[ "$do_commit" -eq 1 ] && actions="$actions, commit"
-[ "$do_tag" -eq 1 ] && actions="$actions, tag"
-[ "$do_push" -eq 1 ] && actions="$actions, push"
+actions="write release.conf, commit, tag"
+[ "$do_push" -eq 1 ] && actions="$actions, push (CI builds)"
 
 printf '\n%srelease plan%s\n' "$C_BOLD" "$C_RESET"
 printf '  upstream ref:     %s\n' "$new_ref"
@@ -243,8 +223,7 @@ printf '  upstream commit:  %s\n' "$DSH_COMMIT"
 printf '  upstream version: %s\n' "$DSH_VERSION"
 printf '  release tag:      %s\n' "$tag"
 printf '  build number:     %s\n' "$next_build"
-printf '  Debian version:   %s\n' "$deb_version"
-printf '  package:          %s\n' "$DIST/$deb_name"
+printf '  Debian version:   %s (built by CI)\n' "$deb_version"
 printf '  actions:          %s\n' "$actions"
 
 if [ "$dry_run" -eq 1 ]; then
@@ -252,99 +231,58 @@ if [ "$dry_run" -eq 1 ]; then
   exit 0
 fi
 
-if [ "$do_build" -eq 1 ]; then
-  require_cmd make
-  log "building $tag"
-  make -C "$ROOT" deb "DSH_REF=$new_ref" "DEB_REVISION=$revision"
-
-  [ -f "$DIST/$deb_name" ] || die "build did not produce $DIST/$deb_name (latest: $(cat "$DIST/latest.txt" 2>/dev/null || echo none))"
-  [ "$(cat "$DIST/latest.txt")" = "$deb_name" ] || die "$DIST/latest.txt does not point at $deb_name"
-  [ "$(dpkg-deb -f "$DIST/$deb_name" Version)" = "$deb_version" ] || die "$deb_name does not declare Version: $deb_version"
-  [ -f "$DIST/release.json" ] || die "dist/release.json is missing"
-  RELEASE_JSON="$DIST/release.json" EXPECTED_TAG="$tag" EXPECTED_DEB="$deb_version" "$(node_bin)" -e '
-    const release = require(process.env.RELEASE_JSON)
-    if (release.releaseTag !== process.env.EXPECTED_TAG) {
-      throw new Error(`manifest releaseTag ${release.releaseTag} != ${process.env.EXPECTED_TAG}`)
-    }
-    if (release.debVersion !== process.env.EXPECTED_DEB) {
-      throw new Error(`manifest debVersion ${release.debVersion} != ${process.env.EXPECTED_DEB}`)
-    }
-  ' || die "dist/release.json does not describe the planned release"
-  step "package verified: $DIST/$deb_name"
-
-  # The build takes a while; make sure nobody published this number meanwhile.
-  assert_tag_available "$tag"
-fi
-
-# Update the single source of truth for the next plain `make`.
+# Update the single source of truth the tag-triggered build validates against.
 set_release_conf_values "$new_ref" "$revision"
 ( unset DSH_REF DEB_REVISION; . "$ROOT/release.conf"
   [ "$DSH_REF" = "$new_ref" ] && [ "$DEB_REVISION" = "$revision" ] ) \
   || die "failed to write the release pin to release.conf"
 
-if [ "$do_commit" -eq 1 ]; then
-  if git -C "$ROOT" diff --quiet -- release.conf; then
-    step "release.conf already records $tag; nothing to commit"
-  else
-    git -C "$ROOT" add release.conf
-    git -C "$ROOT" commit -m "release: $tag" -m "Upstream: $new_ref ($DSH_COMMIT)
+if git -C "$ROOT" diff --quiet -- release.conf; then
+  step "release.conf already records $tag; nothing to commit"
+else
+  git -C "$ROOT" add release.conf
+  git -C "$ROOT" commit -m "release: $tag" -m "Upstream: $new_ref ($DSH_COMMIT)
 Debian:   $deb_version"
-    step "committed release.conf"
-  fi
+  step "committed release.conf"
 fi
 
-if [ "$do_tag" -eq 1 ]; then
-  if git -C "$ROOT" rev-parse -q --verify "refs/tags/$tag" >/dev/null 2>&1; then
-    [ "$(git -C "$ROOT" rev-parse "$tag^{commit}")" = "$(git -C "$ROOT" rev-parse HEAD)" ] \
-      || die "tag $tag exists but does not point at HEAD"
-    step "tag $tag already points at HEAD"
-  else
-    git -C "$ROOT" tag -a "$tag" -m "$tag
+git -C "$ROOT" tag -a "$tag" -m "$tag
 
 Upstream: $new_ref ($DSH_COMMIT)
 Debian:   $deb_version"
-    step "tagged $tag"
-  fi
-fi
+step "tagged $tag"
 
 if [ "$do_push" -eq 1 ]; then
-  # Do not publish a tag that origin/main cannot fast-forward to: CI checks out
-  # the tag, but the branch should remain the linear history of releases.
-  git -C "$ROOT" fetch --quiet origin "$branch" || die "could not fetch origin $branch before pushing"
-  git -C "$ROOT" merge-base --is-ancestor "$(git -C "$ROOT" rev-parse FETCH_HEAD)" HEAD \
-    || die "origin/$branch has commits that this release does not contain; rebase and retry"
-
-  # Push the tag first: the tag is what triggers CI, and a partial push is
-  # easier to recover from than a branch that moved without its tag.
+  # Push the tag first: it is what triggers CI, and a partial push is easier to
+  # recover from than a branch that moved without its tag.
   if ! git -C "$ROOT" push origin "refs/tags/$tag"; then
     warn "the release commit and tag exist locally, but $tag was not pushed"
     printf '  retry the push instead of re-running this script (which would pick the next N):\n'
     printf '    git push origin %s\n' "refs/tags/$tag"
     exit 1
   fi
+  git -C "$ROOT" fetch --quiet origin "$branch" || {
+    warn "$tag is pushed and CI is already building it, but origin/$branch could not be fetched"
+    printf '  push the branch manually when the network is back:\n    git push origin %s\n' "$branch"
+    exit 1
+  }
+  if ! git -C "$ROOT" merge-base --is-ancestor "$(git -C "$ROOT" rev-parse FETCH_HEAD)" HEAD; then
+    warn "$tag is pushed and CI is already building it, but origin/$branch cannot fast-forward"
+    printf '  merge/rebase, then push the branch manually:\n    git push origin %s\n' "$branch"
+    exit 1
+  fi
   if ! git -C "$ROOT" push origin "HEAD:refs/heads/$branch"; then
     warn "$tag is pushed and CI is already building it, but $branch was not pushed"
-    printf '  retry when the network is back:\n'
-    printf '    git push origin %s\n' "$branch"
+    printf '  retry the branch push manually:\n    git push origin %s\n' "$branch"
     exit 1
   fi
   log "pushed $tag and $branch; the tag-triggered GitHub Actions build publishes it"
 fi
 
-if [ "$do_commit" -eq 0 ]; then
-  warn "release.conf was updated but not committed (--no-commit)"
-fi
-
 printf '\n'
 log "${C_GREEN}release ready${C_RESET}: $tag"
-if [ "$do_build" -eq 1 ]; then
-  printf '  package: %s\n' "$DIST/$deb_name"
-fi
-if [ "$do_tag" -eq 1 ]; then
-  printf '  tag:     %s\n' "$tag"
-  if [ "$do_push" -eq 0 ]; then
-    printf '  publish: git push origin %s && git push origin %s\n' "$tag" "$branch"
-  fi
-else
-  printf '  tag:     <not created (--no-tag)>\n'
+printf '  deb (CI): %s\n' "$deb_version"
+printf '  tag:      %s\n' "$tag"
+if [ "$do_push" -eq 0 ]; then
+  printf '  push:     git push origin %s && git push origin %s\n' "$tag" "$branch"
 fi

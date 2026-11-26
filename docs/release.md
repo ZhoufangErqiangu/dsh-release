@@ -10,7 +10,7 @@
   commit 的 `package.json` 版本，不手写、不猜测。
 - `alex.<N>` 是本仓库的构建标识：`alex` 可在 `release.conf` 的
   `DSH_RELEASE_ID` 中修改，`<N>` 是由 tag 推导的、全仓库单调递增的构建号。
-- 运行一个脚本即可推进版本并构建；推 tag 后由 GitHub Actions 自动构建、验证并发布。
+- 运行一个脚本即可推进版本并 push tag；GitHub Actions 从 tag 自动构建、验证并发布。
 
 ## 2. 版本格式与映射
 
@@ -52,45 +52,47 @@ file:   deepseek-harness_0.2.2-alex.2_amd64.deb
   不会因为换上游版本而复用 `alex.1`。
 - 计算方式：取本仓库所有 `v*-<id>.<N>` tag 的最大 `N`，加一。脚本在计算前会
   `git fetch --tags origin`，因此多人/多机器发布也不会撞号。
-- 如果 tag 已存在（本地或 origin），脚本在构建前就报错退出，不会覆盖已发布版本。
+- 如果 tag 已存在（本地或 origin），脚本在改任何文件前就报错退出，不会覆盖已发布版本。
 - `release.conf` 的 `DEB_REVISION` 记录**最近一次发布**的值：直接 `make` 复现该
   版本；`scripts/release.sh` 总是自己算下一个值，不依赖手改。
 - 需要跳过若干号时用 `--build-number N`，但必须大于现有最大值（只能前进）。
 
 ## 4. 脚本
 
-### 4.1 `scripts/release.sh` — 推进版本并构建
+### 4.1 `scripts/release.sh` — 推进版本并推送 tag
 
-默认行为（无参数）：计算下一个版本 → 拉取/校验上游源码 → 完整构建并验证 →
-把新版本写回 `release.conf` → 提交 → 打 annotated tag。默认**不 push**。
+默认行为（无参数）：计算下一个版本 → 解析/校验上游 pin 得到上游版本 → 写回
+`release.conf` → 提交 → 打 annotated tag → push tag 和分支。
+
+它**不做任何构建**。push 的 tag 就是交给 CI 的发布信号：CI 校验 tag、构建、安装
+测试并创建 GitHub Release。
 
 ```bash
-scripts/release.sh                  # 本地完整发布：构建 + commit + tag
-scripts/release.sh --push           # 一步完成：构建 + commit + tag + push，CI 发布
-scripts/release.sh --dsh-ref dsh-v0.2.3 --ci
-                                    # 换 pin，只 tag + push，让 CI 构建
+scripts/release.sh                  # 推进版本 + commit + tag + push，CI 构建
+scripts/release.sh --dsh-ref dsh-v0.2.3
+                                    # 换 pin，同样只 tag + push
+scripts/release.sh --no-push        # 只本地 commit + tag，稍后手动 push
 scripts/release.sh --dry-run        # 只解析并打印计划，不改 release.conf / tag
 ```
 
-已经用默认模式在本地建好 tag、之后才想发布时，直接 push 那个 tag，不要重跑
-`--push`（重跑会按要求计算**下一个** `N`）：
+用 `--no-push` 之后补推时，不要重跑脚本（它会计算**下一个** `N`），直接 push：
 
 ```bash
 git push origin v0.2.2-rc.5-alex.1
 git push origin main
 ```
 
-执行顺序（构建失败不会写 `release.conf`；git/tag 步骤按下面的顺序执行，失败时按
-脚本提示恢复）：
+执行顺序：
 
 1. 检查工作树干净、当前分支是 `main`（可用 `RELEASE_BRANCH` 覆盖）、git 身份已配置。
-2. `git fetch --tags origin`，从 tag 计算下一个 `N`。
-3. 用 `scripts/fetch-source.sh` 解析并校验上游 pin，得到上游版本与 commit。
-4. 推导发布 tag 和 Debian 版本，检查 tag 不在本地/远端。
-5. 构建：`make deb DSH_REF=... DEB_REVISION=...`（fetch → build → stage → package → verify）。
-6. 校验 `dist/` 里的包名、`dpkg-deb` 的 `Version`、`dist/release.json` 三者一致。
-7. 更新 `release.conf`，提交 `release: v...`，打 tag。
-8. `--push` 时先校验 origin/main 可快进，再 push tag（CI 由 tag 触发），最后 push 分支。
+2. 默认 push 时先 fetch origin/main，确认本次提交可以快进推送。
+3. `git fetch --tags origin`，从 tag 计算下一个 `N`。
+4. 用 `scripts/fetch-source.sh` 解析并校验上游 pin，得到上游版本与 commit
+   （只读取版本，不构建）。
+5. 推导发布 tag 和 Debian 版本，检查 tag 不在本地/远端。
+6. 原子更新 `release.conf`（`DSH_REF` 与 `DEB_REVISION`），提交 `release: v...`。
+7. 打 annotated tag。
+8. push tag（触发 CI），再 push 分支。tag push 失败时提示只重试 push，不要重跑脚本。
 
 参数：
 
@@ -98,13 +100,12 @@ git push origin main
 | --- | --- |
 | `--dsh-ref REF` | 把上游 pin 换到 tag 或完整 40 位 commit；成功后写回 `release.conf` |
 | `--build-number N` | 强制构建号（必须大于现有最大 N） |
-| `--no-build` | 不构建，只推进 `release.conf` 并打 tag（交给 CI 构建） |
-| `--push` | 构建完成后 push tag（触发 CI）和分支 |
-| `--ci` | 等价于 `--no-build --push` |
+| `--no-push` | 只本地 commit + tag，不 push（之后可手动 push） |
 | `--dry-run` | 解析并打印下一个版本，不改 `release.conf`、不 commit、不 tag |
-| `--no-commit` | 只写 `release.conf` 不提交（必须同时给 `--no-tag`，本地试构建用） |
-| `--no-tag` | 不创建 tag（常与 `--no-commit` 搭配；不能与 `--push` 同用） |
 | `-h`, `--help` | 帮助 |
+
+旧参数 `--push`、`--ci`、`--no-build`、`--no-commit`、`--no-tag` 已移除；脚本只做
+版本和 tag，构建固定由 CI 完成。
 
 `RELEASE_BRANCH` 可覆盖发布分支。`DSH_RELEASE_ID` 只能改 `release.conf`：workflow 的
 tag 过滤器和 `check-release-tag.sh` 都从该文件读取它，用环境变量覆盖会被拒绝，
@@ -184,33 +185,35 @@ tag 构建的关键约束：
 
 ## 6. 常见操作
 
-### 常规发布（本地构建 + 推送，CI 发布）
+### 常规发布（只推 tag，CI 构建）
 
 ```bash
-scripts/release.sh --push
+scripts/release.sh
 ```
 
 ### 上游升级
 
 ```bash
-scripts/release.sh --dsh-ref dsh-v0.2.3 --ci
+scripts/release.sh --dsh-ref dsh-v0.2.3
 # 版本变成 v0.2.3-alex.<下一个N>，deb 为 0.2.3-alex.<N>
 ```
 
-也可以先只改 pin 验证构建，再正式发布：
+如果新 pin 还没验证过构建，可以先在本地试构建（需要完整构建工具链和
+pnpm 11.28.5），确认后再用脚本发版：
 
 ```bash
-make DSH_REF=dsh-v0.2.3 DEB_REVISION=alex.<N>   # 试构建
-scripts/release.sh --dsh-ref dsh-v0.2.3 --push
+make DSH_REF=dsh-v0.2.3 DEB_REVISION=alex.<N>
+scripts/release.sh --dsh-ref dsh-v0.2.3
 ```
 
 ### 只本机构建、不发布
 
 ```bash
-scripts/release.sh --no-commit --no-tag   # 写入新版本但留在工作树，构建产物在 dist/
-# 或直接复现最近一次发布：
-make
+make                     # 复现 release.conf 记录的最新版本
+make DSH_REF=... DEB_REVISION=...
 ```
+
+`scripts/release.sh` 不负责构建，也不产生 `dist/` 里的包。
 
 ### 预演下一个版本号
 
@@ -224,8 +227,7 @@ scripts/release.sh --dry-run
 ### CI 失败后重试
 
 - tag 已经 push：用 `workflow_dispatch` 在该 tag 上重跑，或 `gh run rerun <run-id>`；
-- 还没 push：修好后直接重跑 `scripts/release.sh`，构建号不会变（tag 尚未存在）；
-- 本地 `--push` 失败：脚本已经创建了 commit/tag。按提示只重试 push
+- 还没 push（`--no-push` 或 push 失败）：commit/tag 已在本地，按提示只重试 push
   （`git push origin refs/tags/<tag>`、`git push origin main`），**不要重跑脚本**，
   否则本地已有 tag 会让它算到下一个 `N`；
 - **不要移动或删除已发布的 tag**。若已发布版本有缺陷，修复后发下一个 `N`，
@@ -249,7 +251,9 @@ Debian 会按版本比较；`~rc` 排在正式版之前，`alex.10` 排在 `alex
 - **tag 保留上游的 `-rc`，deb 用 `~rc`**：两边各自符合自己的生态规则，且语义一致。
 - **版本只在 `release.conf` 记录一次**：上游版本来自源码，构建号来自 tag；
   两者都不允许手写发布版本字符串，避免 tag、deb、文档三处漂移。
-- **默认不 push**：`scripts/release.sh` 先产出可验证的本地发布，再由 `--push`
-  显式发布，防止误推。`--ci` 则明确表示“不本地构建，交给 CI”。
+- **脚本只做版本和 tag，构建固定交给 CI**：本地不需要 pnpm、musl 或 dpkg 工具链
+  就能发版；push 的 tag 是唯一的交接点，CI 从该 commit 复现构建。
+- **默认 push**：版本推进和 tag 只有发布出去才有意义，默认一步完成；需要先检查时
+  用 `--dry-run`，需要离线准备时用 `--no-push`。
 - **tag 不可变**：CI 只接受由脚本生成的 tag，且 tag 必须与 `release.conf` 和源码
   `package.json` 完全一致，避免出现无法复现的发布。
