@@ -23,5 +23,10 @@ SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" dpkg-deb \
 printf '%s\n' "$deb" > "$DIST/latest.txt"
 ( cd "$DIST" && sha256sum "$deb" > "$deb.sha256" )
 
+# Release builds also get a machine-readable manifest next to the package, so a
+# GitHub Release, a mirror, or a deployment job can read the release tag, the
+# upstream pin, and the digest from one file.
+"$ROOT/scripts/release-manifest.sh"
+
 log "${C_GREEN}package ready${C_RESET}: $DIST/$deb ($(du -h "$DIST/$deb" | cut -f1))"
 dpkg-deb --info "$DIST/$deb" >&2

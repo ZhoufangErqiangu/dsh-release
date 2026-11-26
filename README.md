@@ -38,14 +38,19 @@ ls -lh dist/
 产物：
 
 ```
-dist/deepseek-harness_0.2.2~rc.5-1_amd64.deb
-dist/deepseek-harness_0.2.2~rc.5-1_amd64.deb.sha256
+dist/deepseek-harness_0.2.2~rc.5-alex.1_amd64.deb
+dist/deepseek-harness_0.2.2~rc.5-alex.1_amd64.deb.sha256
+dist/release.json
 ```
+
+发布版本是 `v0.2.2-rc.5-alex.1`（tag / GitHub Release 用），对应的 Debian 版本是
+`0.2.2~rc.5-alex.1`。完整的版本规则和发布流程见
+[`docs/release.md`](docs/release.md)。
 
 安装（用 `sudo` 时，维护脚本会自动为这个 sudo 用户 enable + start 用户服务）：
 
 ```bash
-sudo apt install ./dist/deepseek-harness_0.2.2~rc.5-1_amd64.deb
+sudo apt install ./dist/deepseek-harness_0.2.2~rc.5-alex.1_amd64.deb
 systemctl --user status dsh-web
 dsh-web-url          # 输出带一次性 launch token 的 URL，用浏览器打开
 ```
@@ -62,7 +67,9 @@ dsh-web-url          # 输出带一次性 launch token 的 URL，用浏览器打
 `release.conf` 是唯一决定源码版本的地方：
 
 ```conf
-DSH_REF="dsh-v0.2.2-rc.5"
+: "${DSH_REF:=dsh-v0.2.2-rc.5}"
+: "${DSH_RELEASE_ID:=alex}"
+: "${DEB_REVISION:=alex.1}"     # 最近一次发布；scripts/release.sh 负责推进
 ```
 
 `scripts/fetch-source.sh` 会：
@@ -72,7 +79,7 @@ DSH_REF="dsh-v0.2.2-rc.5"
 3. 要求工作树干净；
 4. 从 `package.json` 读版本，映射为 Debian 版本（`0.2.2-rc.5` → `0.2.2~rc.5`），
    并把 commit 时间作为 `SOURCE_DATE_EPOCH`；
-5. 把 ref/commit 写入 `build/source.env`，后续阶段只读这份记录。
+5. 把 ref/commit/发布版本写入 `build/source.env`，后续阶段只读这份记录。
 
 包内可交叉核对：
 
@@ -81,10 +88,44 @@ dpkg-deb -f dist/*.deb X-DSH-Source-Ref X-DSH-Source-Commit
 cat /usr/share/doc/deepseek-harness/BUILD-INFO.json
 ```
 
-一次改 pin（会丢弃 `.work/src` 并重新安装/编译）：
+### 发布版本与构建号
+
+发布版本形如 **`v<上游版本>-alex.<N>`**，例如 `v0.2.2-rc.5-alex.1`：
+
+- `<上游版本>` 直接取 pin 的 `package.json` 版本，和 `DSH_REF` 指向的源码一致；
+  稳定版就是 `v0.2.2-alex.2` 这样最直观的 `a.b.c`；
+- `alex.<N>` 是本仓库的构建标识，`N` 由已发布 tag 全局递增；
+- Debian 版本是同一信息的 Debian 写法：`0.2.2~rc.5-alex.1`（`-` 变 `~`）。
+
+推进版本、构建、写回 `release.conf`、commit、打 tag 只用一个脚本：
 
 ```bash
-make DSH_REF=dsh-v0.2.3-alpha.2 DEB_REVISION=1
+scripts/release.sh --dry-run    # 只解析并打印下一个版本（会刷新 .work/ 源码缓存）
+scripts/release.sh              # 本地构建 + commit + tag（不 push）
+scripts/release.sh --push       # 一步完成构建 + commit + tag + push，CI 发布
+```
+
+换上游 pin 也用同一个入口（`N` 不会重置）：
+
+```bash
+scripts/release.sh --dsh-ref dsh-v0.2.3-alpha.2 --ci
+```
+
+如果已经用默认模式在本地建好 tag，之后只想发布，直接 push 那个 tag 即可；不要
+再跑 `scripts/release.sh --push`，它会计算下一个 `N`：
+
+```bash
+git push origin v0.2.2-rc.5-alex.1 && git push origin main
+```
+
+`DSH_RELEASE_ID` 只改 `release.conf`，不要用环境变量覆盖（CI 的 tag 过滤器和校验
+脚本都读该文件，脚本会拒绝这种覆盖）。
+
+版本规则、tag 校验、CI 流程和常见故障见 [`docs/release.md`](docs/release.md)。
+如果只想临时试构建，仍可直接覆盖变量：
+
+```bash
+make DSH_REF=dsh-v0.2.3-alpha.2 DEB_REVISION=alex.7
 ```
 
 构建使用 `pnpm run build:artifacts --profile official`：发布用品牌配置、无本地 dirty
@@ -177,11 +218,13 @@ dsh-web-url
 ## 命令
 
 ```bash
-make              # 默认目标：完整构建 + 验证
+make              # 默认目标：完整构建 + 验证（复现 release.conf 记录的最新版本）
+make release      # 推进版本、构建、commit、打 tag（等价于 scripts/release.sh）
+make version      # 显示当前源码 pin、发布 tag 和 deb 版本
 make fetch        # 取锁定源码，生成 build/source.env
 make build        # pnpm install + build:artifacts --profile official
 make stage        # 打包 workspace 闭包、包内 pnpm 并组装 rootfs
-make package      # dpkg-deb 生成 dist/*.deb
+make package      # dpkg-deb 生成 dist/*.deb 和 dist/release.json
 make verify       # 控制字段、布局、unit、脚本语法、pnpm 与真实启动冒烟测试
 make clean        # 删 build/ dist/，保留源码和依赖缓存
 make distclean    # 再删 .work/（源码、node_modules、pnpm store）
@@ -256,33 +299,50 @@ postinst 为用户写 enable 链接、`dpkg -r` 停止/禁用并保留 `~/.dsh`�
 ```
 release.conf                 版本/包名/架构唯一配置
 Makefile                     make 入口
+docs/release.md              发布版本规则、脚本和 CI 流程
 packaging/                   control 模板、maintainer 脚本、user unit、启动器、pnpm 包装器、man、文档
+scripts/release.sh           推进版本：算下一个 alex.N、构建、写回配置、commit、tag、可选 push
+scripts/check-release-tag.sh 校验发布 tag 与 release.conf/源码/构建记录一致
+scripts/release-manifest.sh  生成 dist/release.json
 scripts/fetch-source.sh      锁定源码
 scripts/build-source.sh      pnpm install + build:artifacts --profile official
 scripts/stage-runtime.mjs    packed workspace 闭包 -> 生产安装
 scripts/prepare-pnpm.sh      下载/校验/解包固定版本的 pnpm
 scripts/stage-rootfs.sh      组装 rootfs + control + 文档
-scripts/package.sh           dpkg-deb
+scripts/package.sh           dpkg-deb + release.json
 scripts/verify-deb.sh        解包检查 + pnpm/Web 冒烟测试
 scripts/ci-install-smoke.sh  CI 安装后检查（用户 unit + pnpm + 认证流）
 .github/workflows/build-deb.yml
                              build / install-test / release 工作流
 .work/                       源码、node_modules、pnpm store（gitignore）
 build/                       rootfs、staging、验证临时目录（gitignore）
-dist/                        .deb 与 sha256（gitignore）
+dist/                        .deb、sha256、release.json（gitignore）
 ```
 
 ## GitHub Actions
 
-`.github/workflows/build-deb.yml` 目前只保留 `workflow_dispatch`，便于手动控制构建：
+`.github/workflows/build-deb.yml` 以 **tag 驱动发布**，同时保留手动构建：
 
-| 运行方式 | 行为 |
+| 触发方式 | 行为 |
 | --- | --- |
-| 在 `main` 上手动运行 | 构建 + `make verify` + 安装测试 + 上传 14 天 artifact |
-| 在 tag `dsh-v*` 上手动运行 | 额外创建/更新 GitHub Release（tag 必须等于 `release.conf` 的 `DSH_REF`） |
+| push tag `v*-alex.*` | 校验 tag → 构建 + `make verify` → 安装测试 → 创建/更新 GitHub Release |
+| 手动 `workflow_dispatch` | 构建 + 验证 + 安装测试，上传 14 天 artifact；不发布 Release |
+| 在 tag 上手动运行 | 等同 tag push，可用来重跑失败的发布任务 |
 
-如果需要 push/PR 自动构建，在 workflow 的 `on:` 下加回 `push` / `pull_request` 即可；
-并发组会按 ref 自动取消旧运行。
+发布流程是：
+
+```bash
+scripts/release.sh --push
+```
+
+脚本会算出 `vX.Y.Z-alex.N`、完整构建并验证、commit、打 tag，然后 push tag 和分支；
+CI 收到 tag 后先运行 `scripts/check-release-tag.sh`，确认 tag 与 `release.conf` 的
+revision、上游 `package.json` 版本、`build/source.env` 全部一致，再构建。
+构建完成后再次校验 `dpkg-deb` 的 `Version`、`dist/release.json` 的 `releaseTag`
+与 tag 一致，才发布 Release（资产为 `.deb`、`.sha256`、`release.json`）。
+
+tag 构建不接受 `dsh_ref` / `deb_revision` 输入覆盖，避免 tag 与实际产物不一致。
+如果改过 `DSH_RELEASE_ID`，需要同步调整 workflow 的 `on.push.tags` 过滤器。
 
 CI 使用 `ubuntu-24.04` + Node 24，安装测试会先从 NodeSource 安装 `nodejs` 包（满足
 deb 依赖），再用 `dpkg`/apt 安装本包，并运行 `scripts/ci-install-smoke.sh`：
@@ -294,35 +354,32 @@ deb 依赖），再用 `dpkg`/apt 安装本包，并运行 `scripts/ci-install-s
 - 如果有可用的 systemd 用户会话，通过 `dsh-web-url` 取地址；否则直接运行包内
   ExecStart，并验证 401 → token 303 → cookie 200 的认证流。
 
-输入在编译前校验，配错不会浪费完整构建时间：
-
-- `dsh_ref`：上游 tag 或完整 40 位 commit。`v0.2.2-rc.5` 会自动解析为
-  `dsh-v0.2.2-rc.5`；不存在的 tag 直接报错。
-- `deb_revision`：只写 Debian revision，例如 `alex1`，最终版本是
-  `0.2.2~rc.5-alex1`。不要写 `v0.2.2-alex1`；revision 不能包含 `-`。
-
-手动触发示例：
+手动测试构建（不发布）：
 
 ```bash
 # 使用 release.conf 的 pin 和 revision
 gh workflow run build-deb.yml
 
-# 指定上游 tag + 本地 revision；tag 的两种写法都可以
-gh workflow run build-deb.yml -f dsh_ref=v0.2.2-rc.5 -f deb_revision=alex1
-gh workflow run build-deb.yml -f dsh_ref=dsh-v0.2.2-rc.5 -f deb_revision=alex1
+# 指定上游 tag + 构建标识；tag 的两种写法都可以
+gh workflow run build-deb.yml -f dsh_ref=v0.2.2-rc.5 -f deb_revision=alex.7
+gh workflow run build-deb.yml -f dsh_ref=dsh-v0.2.2-rc.5 -f deb_revision=alex.7
 
-# 从 dsh-release 仓库的 tag 触发并发布 Release（tag 需先存在）
-gh workflow run build-deb.yml --ref dsh-v0.2.2-rc.5
+# 重跑某个 tag 的发布
+gh workflow run build-deb.yml --ref v0.2.2-rc.5-alex.1
 ```
 
 常见失败：
 
 - `tag not found upstream: v0.2.2-rc.5`：上游 tag 带 `dsh-` 前缀。workflow 会自动补；
   直接运行 `make DSH_REF=...` 时需要写完整 tag。
-- `deb_revision ... is not valid`：只保留 `alex1` 这类后缀，不要带版本号或 `-`。
+- `tag 'v…' expects release.conf DEB_REVISION=alex.N, but ...`：tag 不是由
+  `scripts/release.sh` 在该 commit 上生成的；不要手打 tag，改用脚本。
+- `tag 'v…' advertises upstream version '…', but the pinned source is '…'`：tag 与
+  `release.conf` 的 pin 不一致，先更新 pin 再发版。
+- `deb_revision ... is not valid`：revision 只写 `alex.N`，不要带版本号或 `-`。
 
-tag 构建会强制校验 tag 与 `release.conf` 的 `DSH_REF` 一致；发布使用
-`GITHUB_TOKEN` 和 job 级 `contents: write`，不需要额外 secrets。
+发布使用 `GITHUB_TOKEN` 和 job 级 `contents: write`，不需要额外 secrets。完整的
+版本规则与故障处理见 [`docs/release.md`](docs/release.md)。
 
 ## 许可证
 

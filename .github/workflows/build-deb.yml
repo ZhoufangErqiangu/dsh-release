@@ -4,6 +4,11 @@ name: build-deb
 # it on a clean Ubuntu 24.04 runner, and publish the artifacts. The package's
 # service is a systemd *user* unit; CI checks that no root unit appears and
 # that the unit is enabled for the installing user.
+#
+# Releases are tag-driven: scripts/release.sh creates v<upstream>-alex.<N> and
+# pushes it, which runs this workflow. The tag is validated against
+# release.conf and the resolved upstream checkout before anything is built, so
+# a tag can never advertise a version the repository does not reproduce.
 on:
   workflow_dispatch:
     inputs:
@@ -12,9 +17,13 @@ on:
         required: false
         type: string
       deb_revision:
-        description: 'Debian revision appended to the upstream version, e.g. alex1 (no version prefix or hyphen)'
+        description: 'Build identifier, e.g. alex.7 (defaults to release.conf; release tags must be v<version>-alex.<N>)'
         required: false
         type: string
+  push:
+    tags:
+      # Keep in sync with DSH_RELEASE_ID in release.conf.
+      - 'v*-alex.*'
 
 concurrency:
   group: build-deb-${{ github.ref }}
@@ -66,9 +75,9 @@ jobs:
           dpkg-deb --version | head -n 1
           df -h /
 
-      # Normalize and validate manual inputs before the expensive build. The
-      # upstream tags carry a dsh- prefix; accepting the bare version keeps the
-      # dispatch form forgiving while still resolving an exact upstream ref.
+      # A pushed release tag drives the version: refuse overrides that could
+      # make the tag and the built package disagree. Manual dispatch keeps the
+      # existing escape hatch for test builds.
       - name: Resolve dispatch inputs
         id: dispatch
         env:
@@ -77,6 +86,27 @@ jobs:
         run: |
           set -euo pipefail
           repo="$(. ./release.conf; printf '%s' "$DSH_REPO_URL")"
+
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            tag="$GITHUB_REF_NAME"
+            id="$(. ./release.conf; printf '%s' "$DSH_RELEASE_ID")"
+            if [[ ! "$tag" =~ ^v.+-"$id"\.[0-9]+$ ]]; then
+              echo "::error::tag '$tag' is not a release tag of the form v<upstream-version>-$id.<N>"
+              exit 1
+            fi
+            if [ -n "${INPUT_DSH_REF:-}" ] || [ -n "${INPUT_DEB_REVISION:-}" ]; then
+              echo "::error::refusing dsh_ref/deb_revision overrides on a release tag; the tag must build release.conf's pin and revision"
+              exit 1
+            fi
+            {
+              echo "tag_build=true"
+              echo "release_tag=$tag"
+              echo "dsh_ref="
+              echo "deb_revision="
+            } >> "$GITHUB_OUTPUT"
+            echo "release tag: $tag"
+            exit 0
+          fi
 
           ref="${INPUT_DSH_REF:-}"
           if [ -n "$ref" ]; then
@@ -95,36 +125,35 @@ jobs:
 
           revision="${INPUT_DEB_REVISION:-}"
           if [ -n "$revision" ] && ! printf '%s' "$revision" | grep -Eq '^[0-9A-Za-z][0-9A-Za-z.+~]*$'; then
-            echo "::error::deb_revision '$revision' is not a valid Debian revision; use only letters, digits, '.', '+', '~' (for example 'alex1'), not the upstream version"
+            echo "::error::deb_revision '$revision' is not a valid Debian revision; use only letters, digits, '.', '+', '~' (for example 'alex.7'), not the upstream version"
             exit 1
           fi
 
           {
+            echo "tag_build=false"
+            echo "release_tag="
             echo "dsh_ref=$ref"
             echo "deb_revision=$revision"
           } >> "$GITHUB_OUTPUT"
           echo "dsh_ref=${ref:-<release.conf pin>}"
           echo "deb_revision=${revision:-<release.conf revision>}"
 
-      # A release tag must name the exact source pin, otherwise the tag would
-      # advertise a build the repository no longer reproduces.
-      - name: Require the release tag to match the source pin
-        if: startsWith(github.ref, 'refs/tags/')
-        env:
-          RESOLVED_DSH_REF: ${{ steps.dispatch.outputs.dsh_ref }}
-        run: |
-          if [ -n "${RESOLVED_DSH_REF:-}" ]; then
-            echo "::error::refusing a dsh_ref override on a release tag; tags must build release.conf's pin"
-            exit 1
-          fi
-          pinned="$(. ./release.conf; printf '%s' "$DSH_REF")"
-          if [ "$pinned" != "${GITHUB_REF_NAME}" ]; then
-            echo "::error::tag ${GITHUB_REF_NAME} does not match release.conf DSH_REF=${pinned}; update release.conf or tag ${pinned}"
-            exit 1
-          fi
+      # Resolve the pin before the expensive build so the tag can be validated
+      # against the actual upstream package.json version. make later reuses this
+      # checkout.
+      - name: Fetch the pinned source
+        if: steps.dispatch.outputs.tag_build == 'true'
+        run: scripts/fetch-source.sh
+
+      - name: Validate the release tag against the pin
+        id: release
+        if: steps.dispatch.outputs.tag_build == 'true'
+        run: scripts/check-release-tag.sh "$GITHUB_REF_NAME" | tee -a "$GITHUB_OUTPUT"
 
       - name: Build, package and verify
         env:
+          TAG_BUILD: ${{ steps.dispatch.outputs.tag_build }}
+          RELEASE_REVISION: ${{ steps.release.outputs.release_revision }}
           RESOLVED_DSH_REF: ${{ steps.dispatch.outputs.dsh_ref }}
           RESOLVED_DEB_REVISION: ${{ steps.dispatch.outputs.deb_revision }}
           # Private-repo runners have 7 GB RAM; keep aggregate build gates
@@ -132,17 +161,44 @@ jobs:
           DSH_GATE_CONCURRENCY: '2'
         run: |
           args=()
-          if [ -n "${RESOLVED_DSH_REF:-}" ]; then args+=("DSH_REF=${RESOLVED_DSH_REF}"); fi
-          if [ -n "${RESOLVED_DEB_REVISION:-}" ]; then args+=("DEB_REVISION=${RESOLVED_DEB_REVISION}"); fi
+          if [ "$TAG_BUILD" = "true" ]; then
+            args+=("DEB_REVISION=$RELEASE_REVISION")
+          else
+            if [ -n "${RESOLVED_DSH_REF:-}" ]; then args+=("DSH_REF=${RESOLVED_DSH_REF}"); fi
+            if [ -n "${RESOLVED_DEB_REVISION:-}" ]; then args+=("DEB_REVISION=${RESOLVED_DEB_REVISION}"); fi
+          fi
           make "${args[@]}"
 
-      - name: Show provenance and verify the digest
+      - name: Show provenance and verify the artifacts
+        env:
+          TAG_BUILD: ${{ steps.dispatch.outputs.tag_build }}
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+          RELEASE_DEB_VERSION: ${{ steps.release.outputs.release_deb_version }}
         run: |
+          set -euo pipefail
           cat build/source.env
-          dpkg-deb -f dist/*.deb \
+          deb="dist/$(cat dist/latest.txt)"
+          dpkg-deb -f "$deb" \
             Package Version Architecture Depends Conflicts \
             X-DSH-Source-Ref X-DSH-Source-Commit X-DSH-Bundled-Pnpm
           ( cd dist && sha256sum -c ./*.sha256 )
+
+          if [ "$TAG_BUILD" = "true" ]; then
+            # Re-check after the build: the tag, the source record, and the
+            # package must all describe the same release.
+            scripts/check-release-tag.sh "$RELEASE_TAG" >/dev/null
+            version="$(dpkg-deb -f "$deb" Version)"
+            [ "$version" = "$RELEASE_DEB_VERSION" ] || {
+              echo "::error::package Version '$version' != tag version '$RELEASE_DEB_VERSION'"
+              exit 1
+            }
+            manifest_tag="$(node -p "require('./dist/release.json').releaseTag")"
+            [ "$manifest_tag" = "$RELEASE_TAG" ] || {
+              echo "::error::release.json releaseTag '$manifest_tag' != tag '$RELEASE_TAG'"
+              exit 1
+            }
+            echo "release artifacts match $RELEASE_TAG"
+          fi
 
       - name: Upload the package
         uses: actions/upload-artifact@v4
@@ -151,6 +207,7 @@ jobs:
           path: |
             dist/*.deb
             dist/*.sha256
+            dist/release.json
             build/source.env
           if-no-files-found: error
           retention-days: 14
@@ -201,16 +258,34 @@ jobs:
           name: debian-package
           path: release
 
+      - name: Check the artifacts against the release tag
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          deb="$(ls release/dist/*.deb)"
+          version="$(dpkg-deb -f "$deb" Version)"
+          manifest_tag="$(node -p "require('./release/dist/release.json').releaseTag")"
+          manifest_version="$(node -p "require('./release/dist/release.json').debVersion")"
+          manifest_sha="$(node -p "require('./release/dist/release.json').sha256")"
+          [ "$manifest_tag" = "$tag" ] || { echo "::error::release.json is for '$manifest_tag', not '$tag'"; exit 1; }
+          [ "$version" = "$manifest_version" ] || { echo "::error::package Version '$version' != manifest '$manifest_version'"; exit 1; }
+          ( cd release/dist && sha256sum -c ./*.sha256 )
+          actual_sha="$(sha256sum "$deb" | cut -d' ' -f1)"
+          [ "$actual_sha" = "$manifest_sha" ] || { echo "::error::package sha256 '$actual_sha' != manifest '$manifest_sha'"; exit 1; }
+          echo "publishing $tag ($version, sha256 $actual_sha)"
+
       - name: Create or update the release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
+          set -euo pipefail
           tag="${GITHUB_REF_NAME}"
-          files=(release/dist/*.deb release/dist/*.sha256)
+          files=(release/dist/*.deb release/dist/*.sha256 release/dist/release.json)
           ref="$(sed -n "s/^DSH_REF='\(.*\)'$/\1/p" release/build/source.env | head -n1)"
           commit="$(sed -n "s/^DSH_COMMIT='\([0-9a-f]*\)'$/\1/p" release/build/source.env | head -n1)"
-          notes="$(printf 'Debian package built from %s (%s).\n\nInstalls the dsh CLI and dsh-web.service, a systemd user service; no root system service is installed.' "$ref" "$commit")"
+          deb_version="$(sed -n "s/^DEB_FULL_VERSION='\(.*\)'$/\1/p" release/build/source.env | head -n1)"
+          notes="$(printf 'Debian package %s built from %s (%s).\n\nInstalls the dsh CLI and dsh-web.service, a systemd user service; no root system service is installed.' "$deb_version" "$ref" "$commit")"
           prerelease=()
           case "$tag" in
             *-rc.*|*-alpha.*|*-beta.*) prerelease+=(--prerelease) ;;

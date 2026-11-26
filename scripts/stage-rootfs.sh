@@ -73,12 +73,14 @@ install -m 0644 "$SRC/THIRD_PARTY_NOTICES.md" "$docroot/THIRD_PARTY_NOTICES.md"
 printf '%s\n' "$DSH_COMMIT" > "$docroot/source-commit"
 
 export DEB_PACKAGE DEB_FULL_VERSION DEB_ARCH DSH_REPO_URL DSH_REF DSH_COMMIT DSH_VERSION SOURCE_DATE_EPOCH PNPM_VERSION
+export DSH_RELEASE_TAG DEB_REVISION
 "$NODE" - "$docroot/BUILD-INFO.json" <<'EOF'
 const { writeFileSync } = require('node:fs')
 const out = process.argv[2]
 const info = {
   package: process.env.DEB_PACKAGE,
   version: process.env.DEB_FULL_VERSION,
+  release: process.env.DSH_RELEASE_TAG || null,
   architecture: process.env.DEB_ARCH,
   source: {
     repository: process.env.DSH_REPO_URL,
@@ -87,6 +89,7 @@ const info = {
     version: process.env.DSH_VERSION,
   },
   build: {
+    revision: process.env.DEB_REVISION,
     sourceDateEpoch: Number(process.env.SOURCE_DATE_EPOCH),
     builtAt: new Date(Number(process.env.SOURCE_DATE_EPOCH) * 1000).toISOString(),
     node: process.version,

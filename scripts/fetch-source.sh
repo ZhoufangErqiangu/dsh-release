@@ -11,6 +11,8 @@ set -euo pipefail
 # shellcheck source=common.sh
 . "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
+require_configured_release_identity
+
 require_cmd git "git is required to fetch the pinned source"
 require_cmd node "Node.js is required to read the pinned source version"
 
@@ -25,7 +27,7 @@ check_node_version >/dev/null
 # point and silently produce a confusing package version, so reject anything
 # outside the Debian revision alphabet.
 if ! printf '%s' "$DEB_REVISION" | grep -Eq '^[0-9A-Za-z][0-9A-Za-z.+~]*$'; then
-  die "invalid DEB_REVISION '$DEB_REVISION': use only letters, digits, '.', '+', '~' (for example 'alex1'), not a version prefix"
+  die "invalid DEB_REVISION '$DEB_REVISION': use only letters, digits, '.', '+', '~' (for example 'alex.1'), not a version prefix"
 fi
 
 IS_COMMIT=0
@@ -140,6 +142,7 @@ printf '%s' "$DSH_VERSION" | grep -Eq '^[0-9][0-9A-Za-z.+~-]*$' || die "unexpect
 # (it separates the revision), and '~' sorts before the final release.
 DEB_UPSTREAM_VERSION="${DSH_VERSION/-/\~}"
 DEB_FULL_VERSION="${DEB_UPSTREAM_VERSION}-${DEB_REVISION}"
+DSH_RELEASE_TAG="$(release_tag "$DSH_VERSION" "$DEB_REVISION")"
 SOURCE_DATE_EPOCH="$(git -C "$SRC" log -1 --format=%ct)"
 
 cat > "$BUILD/source.env" <<EOF
@@ -149,10 +152,12 @@ DSH_REF='$DSH_REF'
 DSH_VERSION='$DSH_VERSION'
 DSH_COMMIT='$HEAD_COMMIT'
 DEB_UPSTREAM_VERSION='$DEB_UPSTREAM_VERSION'
+DEB_REVISION='$DEB_REVISION'
 DEB_FULL_VERSION='$DEB_FULL_VERSION'
+DSH_RELEASE_TAG='$DSH_RELEASE_TAG'
 DEB_PACKAGE='$DEB_PACKAGE'
 DEB_ARCH='$DEB_ARCH'
 SOURCE_DATE_EPOCH='$SOURCE_DATE_EPOCH'
 EOF
 
-log "${C_GREEN}source ready${C_RESET}: dsh $DSH_VERSION @ ${HEAD_COMMIT:0:12} (deb $DEB_FULL_VERSION)"
+log "${C_GREEN}source ready${C_RESET}: dsh $DSH_VERSION @ ${HEAD_COMMIT:0:12} (deb $DEB_FULL_VERSION${DSH_RELEASE_TAG:+, release $DSH_RELEASE_TAG})"

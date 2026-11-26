@@ -101,3 +101,55 @@ host_deb_arch() {
     *)       die "unsupported build architecture: $(uname -m)" ;;
   esac
 }
+
+# --- release version scheme --------------------------------------------------
+#
+# A release version is
+#
+#   v<upstream-version>-<DSH_RELEASE_ID>.<N>
+#
+# for example v0.2.2-rc.5-alex.1, where 0.2.2-rc.5 is the version in the pinned
+# upstream checkout and alex.1 is our build identifier. The matching Debian
+# version is 0.2.2~rc.5-alex.1: the tag keeps the upstream hyphen, while the
+# package version turns that hyphen into '~' (Debian upstream versions may not
+# contain '-', and '~' sorts a prerelease before the final release).
+
+release_identity() {
+  printf '%s\n' "${DSH_RELEASE_ID:-alex}"
+}
+
+# release_build_number REVISION prints N when REVISION is "<identity>.N".
+release_build_number() {
+  local id
+  id="$(release_identity)"
+  [[ "$1" =~ ^"$id"\.([0-9]+)$ ]] || return 1
+  printf '%s\n' "${BASH_REMATCH[1]}"
+}
+
+# release_tag VERSION REVISION prints the release tag, or nothing when the
+# revision does not follow the "<identity>.N" scheme (for example "1").
+release_tag() {
+  local n
+  n="$(release_build_number "$2")" || return 0
+  [ -n "$n" ] || return 0
+  printf 'v%s-%s.%s\n' "$1" "$(release_identity)" "$n"
+}
+
+# release_identity_from_config prints DSH_RELEASE_ID as recorded in
+# release.conf, ignoring an environment override.
+release_identity_from_config() {
+  env -u DSH_RELEASE_ID bash -c '. "$1/release.conf"; printf "%s" "$DSH_RELEASE_ID"' _ "$ROOT"
+}
+
+# require_configured_release_identity keeps the build identity in one place.
+# The CI tag filter and check-release-tag.sh read release.conf, so an
+# environment override would produce a tag the pipeline does not recognise.
+require_configured_release_identity() {
+  local configured current
+  configured="$(release_identity_from_config)"
+  printf '%s' "$configured" | grep -Eq '^[a-z][a-z0-9]*$' \
+    || die "invalid DSH_RELEASE_ID '$configured' in release.conf: use lowercase letters and digits (for example 'alex')"
+  current="$(release_identity)"
+  [ "$current" = "$configured" ] \
+    || die "DSH_RELEASE_ID is overridden as '$current', but release.conf records '$configured'; edit release.conf instead (the tag filter and CI validation read the file)"
+}
