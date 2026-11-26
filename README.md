@@ -234,13 +234,15 @@ dist/                        .deb 与 sha256（gitignore）
 
 ## GitHub Actions
 
-`.github/workflows/build-deb.yml` 覆盖三类触发：
+`.github/workflows/build-deb.yml` 目前只保留 `workflow_dispatch`，便于手动控制构建：
 
-| 触发 | 行为 |
+| 运行方式 | 行为 |
 | --- | --- |
-| push 到 `main`/`master`、pull_request | 构建、`make verify`、上传 14 天 artifact |
-| push tag `dsh-v*` | 在构建 + 安装测试通过后创建/更新 GitHub Release，`-rc/-alpha/-beta` 自动标为 prerelease |
-| workflow_dispatch | 可手动覆盖 `DSH_REF`（tag 或完整 commit）和 `DEB_REVISION`；tag 上禁止覆盖 `DSH_REF` |
+| 在 `main` 上手动运行 | 构建 + `make verify` + 安装测试 + 上传 14 天 artifact |
+| 在 tag `dsh-v*` 上手动运行 | 额外创建/更新 GitHub Release（tag 必须等于 `release.conf` 的 `DSH_REF`） |
+
+如果需要 push/PR 自动构建，在 workflow 的 `on:` 下加回 `push` / `pull_request` 即可；
+并发组会按 ref 自动取消旧运行。
 
 CI 使用 `ubuntu-24.04` + Node 24，安装测试会先从 NodeSource 安装 `nodejs` 包（满足
 deb 依赖），再用 `dpkg`/apt 安装本包，并运行 `scripts/ci-install-smoke.sh`：
@@ -250,15 +252,35 @@ deb 依赖），再用 `dpkg`/apt 安装本包，并运行 `scripts/ci-install-s
 - 如果有可用的 systemd 用户会话，通过 `dsh-web-url` 取地址；否则直接运行包内
   ExecStart，并验证 401 → token 303 → cookie 200 的认证流。
 
-tag 必须与 `release.conf` 的 `DSH_REF` 完全一致，否则 workflow 在构建前失败；这保证
-release 资产确实来自锁定版本。发布使用 `GITHUB_TOKEN` 和 job 级 `contents: write`，
-不需要额外 secrets。
+输入在编译前校验，配错不会浪费完整构建时间：
 
-手工触发示例（GitHub CLI）：
+- `dsh_ref`：上游 tag 或完整 40 位 commit。`v0.2.2-rc.5` 会自动解析为
+  `dsh-v0.2.2-rc.5`；不存在的 tag 直接报错。
+- `deb_revision`：只写 Debian revision，例如 `alex1`，最终版本是
+  `0.2.2~rc.5-alex1`。不要写 `v0.2.2-alex1`；revision 不能包含 `-`。
+
+手动触发示例：
 
 ```bash
-gh workflow run build-deb.yml -f dsh_ref=dsh-v0.2.2-rc.5 -f deb_revision=2
+# 使用 release.conf 的 pin 和 revision
+gh workflow run build-deb.yml
+
+# 指定上游 tag + 本地 revision；tag 的两种写法都可以
+gh workflow run build-deb.yml -f dsh_ref=v0.2.2-rc.5 -f deb_revision=alex1
+gh workflow run build-deb.yml -f dsh_ref=dsh-v0.2.2-rc.5 -f deb_revision=alex1
+
+# 从 dsh-release 仓库的 tag 触发并发布 Release（tag 需先存在）
+gh workflow run build-deb.yml --ref dsh-v0.2.2-rc.5
 ```
+
+常见失败：
+
+- `tag not found upstream: v0.2.2-rc.5`：上游 tag 带 `dsh-` 前缀。workflow 会自动补；
+  直接运行 `make DSH_REF=...` 时需要写完整 tag。
+- `deb_revision ... is not valid`：只保留 `alex1` 这类后缀，不要带版本号或 `-`。
+
+tag 构建会强制校验 tag 与 `release.conf` 的 `DSH_REF` 一致；发布使用
+`GITHUB_TOKEN` 和 job 级 `contents: write`，不需要额外 secrets。
 
 ## 许可证
 

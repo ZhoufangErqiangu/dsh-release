@@ -18,6 +18,15 @@ check_node_version >/dev/null
 
 : "${DSH_REPO_URL:?DSH_REPO_URL is empty}"
 : "${DSH_REF:?DSH_REF is empty}"
+: "${DEB_REVISION:?DEB_REVISION is empty}"
+
+# The revision is appended to an upstream version that already contains a
+# tilde (0.2.2~rc.5). A hyphen would split the Debian version at a different
+# point and silently produce a confusing package version, so reject anything
+# outside the Debian revision alphabet.
+if ! printf '%s' "$DEB_REVISION" | grep -Eq '^[0-9A-Za-z][0-9A-Za-z.+~]*$'; then
+  die "invalid DEB_REVISION '$DEB_REVISION': use only letters, digits, '.', '+', '~' (for example 'alex1'), not a version prefix"
+fi
 
 IS_COMMIT=0
 case "$DSH_REF" in
@@ -41,18 +50,23 @@ host_arch="$(host_deb_arch)"
 mkdir -p "$WORK" "$BUILD"
 export GIT_TERMINAL_PROMPT=0
 
-# resolve_remote_tag prints the commit a tag points at (peeling annotated tags).
-resolve_remote_tag() {
-  local out peeled direct
-  out="$(git ls-remote --tags "$DSH_REPO_URL" "refs/tags/$DSH_REF" "refs/tags/$DSH_REF^{}" 2>/dev/null || true)"
-  peeled="$(printf '%s\n' "$out" | awk -v want="refs/tags/$DSH_REF^{}" '$2 == want { print $1; exit }')"
+# remote_tag_commit NAME prints the commit a tag points at, peeling annotated
+# tags. It fails when the tag does not exist.
+remote_tag_commit() {
+  local name="$1" out peeled direct
+  out="$(git ls-remote --tags "$DSH_REPO_URL" "refs/tags/$name" "refs/tags/$name^{}" 2>/dev/null || true)"
+  peeled="$(printf '%s\n' "$out" | awk -v want="refs/tags/$name^{}" '$2 == want { print $1; exit }')"
   if [ -n "$peeled" ]; then
     printf '%s\n' "$peeled"
     return 0
   fi
-  direct="$(printf '%s\n' "$out" | awk -v want="refs/tags/$DSH_REF" '$2 == want { print $1; exit }')"
+  direct="$(printf '%s\n' "$out" | awk -v want="refs/tags/$name" '$2 == want { print $1; exit }')"
   [ -n "$direct" ] || return 1
   printf '%s\n' "$direct"
+}
+
+resolve_remote_tag() {
+  remote_tag_commit "$DSH_REF"
 }
 
 cached_commit=""
@@ -100,7 +114,13 @@ else
       || die "could not fetch commit $DSH_REF (GitHub serves only reachable commits; use a release tag instead)"
     git -C "$SRC" checkout -q --detach FETCH_HEAD
   else
-    [ -n "$desired_commit" ] || die "tag not found upstream: $DSH_REF"
+    if [ -z "$desired_commit" ]; then
+      hint="$(remote_tag_commit "dsh-$DSH_REF" 2>/dev/null || true)"
+      if [ -n "$hint" ]; then
+        die "tag not found upstream: $DSH_REF (did you mean dsh-$DSH_REF?)"
+      fi
+      die "tag not found upstream: $DSH_REF"
+    fi
     log "fetching tag $DSH_REF (${desired_commit:0:12})"
     git -C "$SRC" fetch --depth=1 --no-tags origin "+refs/tags/$DSH_REF:refs/tags/$DSH_REF"
     git -C "$SRC" checkout -q --detach "$DSH_REF^{commit}"
