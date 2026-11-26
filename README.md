@@ -314,7 +314,7 @@ scripts/package.sh           dpkg-deb + release.json
 scripts/verify-deb.sh        解包检查 + pnpm/Web 冒烟测试
 scripts/ci-install-smoke.sh  CI 安装后检查（用户 unit + pnpm + 认证流）
 .github/workflows/build-deb.yml
-                             build / install-test / release 工作流
+                             build / release 工作流
 .work/                       源码、node_modules、pnpm store（gitignore）
 build/                       rootfs、staging、验证临时目录（gitignore）
 dist/                        .deb、sha256、release.json（gitignore）
