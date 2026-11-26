@@ -5,10 +5,6 @@ name: build-deb
 # service is a systemd *user* unit; CI checks that no root unit appears and
 # that the unit is enabled for the installing user.
 on:
-  push:
-    branches: [main, master]
-    tags: ['dsh-v*']
-  pull_request:
   workflow_dispatch:
     inputs:
       dsh_ref:
