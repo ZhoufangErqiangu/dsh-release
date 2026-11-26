@@ -1,0 +1,4 @@
+# Build scratch: pinned source checkout, node_modules, pnpm store, staging.
+/.work/
+/build/
+/dist/

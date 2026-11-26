@@ -1,0 +1,187 @@
+name: build-deb
+
+# Build the DeepSeek Harness .deb from the source pin in release.conf, install
+# it on a clean Ubuntu 24.04 runner, and publish the artifacts. The package's
+# service is a systemd *user* unit; CI checks that no root unit appears and
+# that the unit is enabled for the installing user.
+on:
+  push:
+    branches: [main, master]
+    tags: ['dsh-v*']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      dsh_ref:
+        description: 'Optional tag or full commit overriding release.conf'
+        required: false
+        type: string
+      deb_revision:
+        description: 'Optional Debian revision override'
+        required: false
+        type: string
+
+concurrency:
+  group: build-deb-${{ github.ref }}
+  cancel-in-progress: true
+
+# Workflow-wide read access; the release job tightens this to contents: write.
+permissions:
+  contents: read
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+  build:
+    name: Build and verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out the release tooling
+        uses: actions/checkout@v4
+
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential curl ca-certificates git xz-utils
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # Keep this in sync with packageManager in the pinned DSH checkout.
+      # scripts/build-source.sh refuses to run when the major pin differs.
+      - name: Install pnpm 11.28.5
+        run: npm install --global pnpm@11.28.5
+
+      # The source install plus staged runtime needs several GB; GitHub's
+      # hosted image carries large SDKs that this build never uses.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h /
+
+      - name: Show toolchain
+        run: |
+          node --version
+          pnpm --version
+          dpkg-deb --version | head -n 1
+          df -h /
+
+      # A release tag must name the exact source pin, otherwise the tag would
+      # advertise a build the repository no longer reproduces.
+      - name: Require the release tag to match the source pin
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          INPUT_DSH_REF: ${{ github.event.inputs.dsh_ref }}
+        run: |
+          if [ -n "${INPUT_DSH_REF:-}" ]; then
+            echo "::error::refusing a dsh_ref override on a release tag; tags must build release.conf's pin"
+            exit 1
+          fi
+          pinned="$(. ./release.conf; printf '%s' "$DSH_REF")"
+          if [ "$pinned" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match release.conf DSH_REF=${pinned}; update release.conf or tag ${pinned}"
+            exit 1
+          fi
+
+      - name: Build, package and verify
+        env:
+          INPUT_DSH_REF: ${{ github.event.inputs.dsh_ref }}
+          INPUT_DEB_REVISION: ${{ github.event.inputs.deb_revision }}
+          # Private-repo runners have 7 GB RAM; keep aggregate build gates
+          # from overlapping too aggressively.
+          DSH_GATE_CONCURRENCY: '2'
+        run: |
+          args=()
+          if [ -n "${INPUT_DSH_REF:-}" ]; then args+=("DSH_REF=${INPUT_DSH_REF}"); fi
+          if [ -n "${INPUT_DEB_REVISION:-}" ]; then args+=("DEB_REVISION=${INPUT_DEB_REVISION}"); fi
+          make "${args[@]}"
+
+      - name: Show provenance and verify the digest
+        run: |
+          cat build/source.env
+          dpkg-deb -f dist/*.deb \
+            Package Version Architecture Depends Conflicts \
+            X-DSH-Source-Ref X-DSH-Source-Commit
+          ( cd dist && sha256sum -c ./*.sha256 )
+
+      - name: Upload the package
+        uses: actions/upload-artifact@v4
+        with:
+          name: debian-package
+          path: |
+            dist/*.deb
+            dist/*.sha256
+            build/source.env
+          if-no-files-found: error
+          retention-days: 14
+
+  install-test:
+    name: Install and run as a user service
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out the verification script
+        uses: actions/checkout@v4
+
+      - name: Download the package
+        uses: actions/download-artifact@v4
+        with:
+          name: debian-package
+          path: pkg
+
+      # The deb depends on the system nodejs (>= 24.9.0). Ubuntu 24.04's
+      # archive Node is too old, so install Node 24 from NodeSource first.
+      - name: Install Node.js 24 as an apt package
+        run: |
+          sudo apt-get update
+          curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
+          sudo apt-get install -y nodejs
+          /usr/bin/node --version
+
+      # DSH_DEB_USER makes the postinst enable dsh-web for the runner user even
+      # when the CI environment does not preserve SUDO_USER.
+      - name: Install the deb for the runner user
+        run: sudo DSH_DEB_USER=runner apt-get install -y ./pkg/dist/*.deb
+
+      - name: Verify installation, user unit and Web UI auth
+        run: bash scripts/ci-install-smoke.sh
+
+  release:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [build, install-test]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download the package
+        uses: actions/download-artifact@v4
+        with:
+          name: debian-package
+          path: release
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          files=(release/dist/*.deb release/dist/*.sha256)
+          ref="$(sed -n "s/^DSH_REF='\(.*\)'$/\1/p" release/build/source.env | head -n1)"
+          commit="$(sed -n "s/^DSH_COMMIT='\([0-9a-f]*\)'$/\1/p" release/build/source.env | head -n1)"
+          notes="$(printf 'Debian package built from %s (%s).\n\nInstalls the dsh CLI and dsh-web.service, a systemd user service; no root system service is installed.' "$ref" "$commit")"
+          prerelease=()
+          case "$tag" in
+            *-rc.*|*-alpha.*|*-beta.*) prerelease+=(--prerelease) ;;
+          esac
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$tag" "${files[@]}" --repo "$GITHUB_REPOSITORY" \
+              --verify-tag --title "$tag" --notes "$notes" "${prerelease[@]}"
+          fi

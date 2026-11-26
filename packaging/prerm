@@ -1,0 +1,71 @@
+#!/bin/sh
+# Before removal: stop and disable the *user* service for the installing user.
+# User data in ~/.dsh is intentionally left in place; see README.Debian.
+set -e
+
+UNIT=dsh-web.service
+PKG=deepseek-harness
+
+warn() { echo "$PKG: $*" >&2; }
+note() { echo "$PKG: $*" >&2; }
+
+detect_user() {
+  if [ -n "${DSH_DEB_USER:-}" ]; then
+    printf '%s\n' "$DSH_DEB_USER"
+    return 0
+  fi
+  if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+    printf '%s\n' "$SUDO_USER"
+    return 0
+  fi
+  if [ -n "${PKEXEC_UID:-}" ]; then
+    getent passwd "$PKEXEC_UID" | cut -d: -f1
+    return 0
+  fi
+  return 1
+}
+
+as_user() {
+  user=$1
+  shift
+  home=$(getent passwd "$user" | cut -d: -f6)
+  uid=$(id -u "$user")
+  runuser -u "$user" -- env \
+    HOME="$home" \
+    XDG_RUNTIME_DIR="/run/user/$uid" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+    "$@"
+}
+
+disable_unit() {
+  user=$1
+  as_user "$user" systemctl --user disable "$UNIT" >/dev/null 2>&1 || true
+  home=$(getent passwd "$user" | cut -d: -f6)
+  as_user "$user" rm -f "$home/.config/systemd/user/default.target.wants/$UNIT" >/dev/null 2>&1 || true
+}
+
+case "${1:-}" in
+  remove|deconfigure)
+    user=$(detect_user) || true
+    if [ -z "${user:-}" ]; then
+      note "no installing user detected; $UNIT was not stopped or disabled."
+      note "If another user enabled it, run as that user: systemctl --user disable --now $UNIT"
+      exit 0
+    fi
+    if ! id "$user" >/dev/null 2>&1; then
+      exit 0
+    fi
+    as_user "$user" systemctl --user stop "$UNIT" >/dev/null 2>&1 || true
+    disable_unit "$user"
+    note "stopped and disabled $UNIT for user '$user'."
+    note "User data in ~/.dsh was left untouched."
+    ;;
+  upgrade|failed-upgrade)
+    # The new package's postinst restarts the service.
+    ;;
+  *)
+    warn "prerm called with unknown argument '${1:-}'"
+    ;;
+esac
+
+exit 0

@@ -1,0 +1,22 @@
+#!/bin/sh
+# Print the URL that opens the current dsh-web user service.
+#
+# The Web UI requires this process's launch token once; a successful first
+# visit mints a persistent browser cookie, after which http://127.0.0.1:3080
+# works directly. The service prints the tokenized URL to the journal at every
+# start, and this helper returns the most recent one.
+set -eu
+
+unit=dsh-web.service
+url="$(journalctl --user -u "$unit" --no-pager -o cat -n 500 2>/dev/null \
+  | sed -n 's/^dsh web: \(http:\/\/[^ ]*\).*/\1/p' \
+  | tail -n 1)"
+
+if [ -z "$url" ]; then
+  echo "dsh-web-url: no dsh-web launch URL found in the journal." >&2
+  echo "dsh-web-url: start it with: systemctl --user start $unit" >&2
+  echo "dsh-web-url: then run this command again." >&2
+  exit 1
+fi
+
+printf '%s\n' "$url"

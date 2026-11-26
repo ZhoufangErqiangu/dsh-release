@@ -1,0 +1,27 @@
+[Unit]
+Description=DeepSeek Harness Web UI (dsh)
+Documentation=file:///usr/share/doc/deepseek-harness/README.Debian.gz
+Documentation=https://github.com/deepseek-ai/deepseek-harness
+# A user service: it runs as the logged-in user, in that user's slice, with
+# that user's $HOME and ~/.dsh state. It is installed under
+# /usr/lib/systemd/user and is never enabled as a system (root) service.
+# No network ordering: a user manager has no system network target and the
+# server binds loopback immediately; API calls retry on their own.
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Optional per-user settings, e.g. DEEPSEEK_API_KEY=..., DSH_HOME=...
+EnvironmentFile=-%h/.config/dsh/web.env
+# Change the bind address or port with: systemctl --user edit dsh-web
+# The tokenized launch URL is printed to the journal; "dsh-web-url" prints the
+# most recent one for this user.
+ExecStart=/usr/bin/dsh web --no-open --host 127.0.0.1 --port 3080
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillMode=mixed
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,115 @@
+#!/bin/sh
+# Post-install: make the *user* service available to the installing user.
+#
+# This script runs as root (dpkg), but the service must not: it is enabled and
+# started through the target user's own systemd user manager. When no user can
+# be identified or no user manager is reachable (e.g. a container image build),
+# the unit stays installed and the message explains the one command to run.
+set -e
+
+UNIT=dsh-web.service
+PKG=deepseek-harness
+
+warn() { echo "$PKG: $*" >&2; }
+note() { echo "$PKG: $*" >&2; }
+
+detect_user() {
+  if [ -n "${DSH_DEB_USER:-}" ]; then
+    printf '%s\n' "$DSH_DEB_USER"
+    return 0
+  fi
+  if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+    printf '%s\n' "$SUDO_USER"
+    return 0
+  fi
+  if [ -n "${PKEXEC_UID:-}" ]; then
+    getent passwd "$PKEXEC_UID" | cut -d: -f1
+    return 0
+  fi
+  return 1
+}
+
+as_user() {
+  user=$1
+  shift
+  home=$(getent passwd "$user" | cut -d: -f6)
+  uid=$(id -u "$user")
+  runuser -u "$user" -- env \
+    HOME="$home" \
+    XDG_RUNTIME_DIR="/run/user/$uid" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+    "$@"
+}
+
+enable_unit() {
+  user=$1
+  if as_user "$user" systemctl --user enable "$UNIT" >/dev/null 2>&1; then
+    return 0
+  fi
+  # No user manager reachable (common during image builds): create the same
+  # default.target.wants link that `systemctl --user enable` would create, so
+  # the service starts at the user's next login.
+  home=$(getent passwd "$user" | cut -d: -f6)
+  as_user "$user" mkdir -p "$home/.config/systemd/user/default.target.wants" || return 1
+  as_user "$user" ln -sfn "/usr/lib/systemd/user/$UNIT" "$home/.config/systemd/user/default.target.wants/$UNIT" || return 1
+}
+
+case "${1:-}" in
+  configure)
+    user=$(detect_user) || true
+    if [ -z "${user:-}" ]; then
+      note "no installing user detected; the Web UI service was not enabled."
+      note "To run it as your own user service:"
+      note "  systemctl --user enable --now $UNIT"
+      note "(install with sudo so this can be done automatically, or set DSH_DEB_USER=<name>)"
+      exit 0
+    fi
+
+    if ! id "$user" >/dev/null 2>&1; then
+      warn "detected user '$user' does not exist; skipping service activation"
+      exit 0
+    fi
+
+    as_user "$user" systemctl --user daemon-reload >/dev/null 2>&1 || true
+
+    if [ -n "${2:-}" ]; then
+      # Upgrade: keep the user's enable/disable choice, restart only if running.
+      if as_user "$user" systemctl --user is-active --quiet "$UNIT" >/dev/null 2>&1; then
+        if as_user "$user" systemctl --user restart "$UNIT" >/dev/null 2>&1; then
+          note "restarted $UNIT for user '$user' after upgrade."
+        else
+          warn "could not restart $UNIT for user '$user'; run: systemctl --user restart $UNIT"
+        fi
+      else
+        note "$UNIT is not running for user '$user'; it starts at the next login,"
+        note "or now with: systemctl --user start $UNIT"
+      fi
+      exit 0
+    fi
+
+    if ! enable_unit "$user"; then
+      warn "could not enable $UNIT for user '$user'."
+      note "The unit is installed; enable it after logging in with:"
+      note "  systemctl --user enable --now $UNIT"
+      exit 0
+    fi
+    if as_user "$user" systemctl --user start "$UNIT" >/dev/null 2>&1; then
+      note "enabled and started $UNIT for user '$user'."
+      note "Open it as that user with: dsh-web-url"
+      note "(the first URL carries a one-time launch token; the browser then keeps a cookie)"
+      note "This is a user service: stop it with: systemctl --user stop $UNIT"
+    else
+      note "enabled $UNIT for user '$user'."
+      note "No running systemd user session was reachable, so it will start at"
+      note "that user's next login. To start it now: systemctl --user start $UNIT"
+      note "To keep it running after logout (optional): sudo loginctl enable-linger $user"
+    fi
+    ;;
+  abort-upgrade|abort-remove|abort-deconfigure)
+    ;;
+  *)
+    warn "postinst called with unknown argument '${1:-}'"
+    ;;
+esac
+
+exit 0

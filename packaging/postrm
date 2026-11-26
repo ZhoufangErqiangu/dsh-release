@@ -1,0 +1,12 @@
+#!/bin/sh
+# Nothing outside dpkg's file list is created by this package.
+# Per-user state under ~/.dsh and ~/.config/dsh is intentionally never removed
+# by purge: it contains sessions, credentials, and user configuration.
+set -e
+
+case "${1:-}" in
+  purge|remove|upgrade|disappear)
+    ;;
+esac
+
+exit 0

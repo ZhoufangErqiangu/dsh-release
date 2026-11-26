@@ -1,0 +1,30 @@
+Package: @PACKAGE@
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: @MAINTAINER@
+Installed-Size: @INSTALLED_SIZE@
+Depends: nodejs (>= @NODE_MIN@), libc6 (>= 2.35)
+Recommends: git
+Suggests: pnpm
+Section: utils
+Priority: optional
+Homepage: https://github.com/deepseek-ai/deepseek-harness
+Conflicts: dsh
+Replaces: dsh
+X-DSH-Source-Ref: @DSH_REF@
+X-DSH-Source-Commit: @DSH_COMMIT@
+Description: DeepSeek Harness Web UI and CLI (dsh)
+ DeepSeek Harness is an open-source agent harness from DeepSeek AI, built on
+ an everything-is-a-plugin architecture (Cordis).
+ .
+ This package installs the `dsh` command and the Web UI under /usr/lib/dsh,
+ plus a systemd *user* unit, dsh-web.service. The service runs as the
+ logged-in user, keeps its state in that user's ~/.dsh, and serves the Web UI
+ at http://127.0.0.1:3080. No root system service is installed or enabled.
+ .
+ The package depends on the system Node.js (>= 24.9.0); it does not bundle a
+ runtime. On Ubuntu 24.04, install Node 24 from NodeSource first.
+ .
+ The package name is deepseek-harness because the unrelated Debian/Ubuntu
+ package `dsh` (distributed shell) already owns that name and /usr/bin/dsh;
+ the two packages conflict.

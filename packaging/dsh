@@ -1,0 +1,59 @@
+#!/bin/sh
+# dsh — DeepSeek Harness launcher installed by the deepseek-harness package.
+#
+# The package depends on the system Node.js (>= 24.9.0) and never bundles its
+# own runtime. This wrapper locates a suitable Node before starting the CLI, so
+# a stale /usr/bin/node cannot shadow a newer one chosen via PATH.
+set -eu
+
+APP_ROOT="${DSH_APP_ROOT:-/usr/lib/dsh/app}"
+ENTRY="$APP_ROOT/node_modules/@deepseek-ai/dsh/lib/bin.js"
+
+if [ ! -f "$ENTRY" ]; then
+  echo "dsh: installation is incomplete: $ENTRY is missing" >&2
+  echo "dsh: reinstall the deepseek-harness package" >&2
+  exit 127
+fi
+
+node_ok() {
+  "$1" -e '
+    const [a, b, c] = process.versions.node.split(".").map(Number)
+    if (a < 24 || (a === 24 && (b < 9 || (b === 9 && c < 0)))) process.exit(1)
+  ' >/dev/null 2>&1
+}
+
+consider_node() {
+  candidate=$1
+  [ -n "$candidate" ] || return 1
+  [ -x "$candidate" ] || return 1
+  LAST_SEEN="$candidate"
+  if node_ok "$candidate"; then
+    NODE="$candidate"
+    return 0
+  fi
+  return 1
+}
+
+NODE=""
+LAST_SEEN=""
+[ -n "${DSH_NODE:-}" ] && consider_node "$DSH_NODE" || true
+PATH_NODE="$(command -v node 2>/dev/null || true)"
+if [ -z "$NODE" ]; then
+  for candidate in /usr/bin/node /usr/local/bin/node "$PATH_NODE"; do
+    consider_node "$candidate" && break
+  done
+fi
+
+if [ -z "$NODE" ]; then
+  if [ -n "$LAST_SEEN" ]; then
+    echo "dsh: Node.js >= 24.9.0 is required, but $LAST_SEEN is $("$LAST_SEEN" -v 2>/dev/null || echo 'not runnable')" >&2
+  else
+    echo "dsh: Node.js >= 24.9.0 was not found on PATH" >&2
+  fi
+  echo "dsh: install Node 24 (for example from NodeSource) or set DSH_NODE=/path/to/node" >&2
+  exit 127
+fi
+
+# --enable-source-maps keeps stack traces useful without a build-time flag;
+# it is ignored when a package ships no maps.
+exec "$NODE" --enable-source-maps "$ENTRY" "$@"

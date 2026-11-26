@@ -1,0 +1,87 @@
+.TH DSH 1 "2026-11-26" "deepseek-harness" "User Commands"
+.SH NAME
+dsh \- DeepSeek Harness command-line launcher and Web UI
+.SH SYNOPSIS
+.B dsh
+[\fB\-\-profile\fR \fIname\fR] \fIname\fR [\fIoptions\fR] [\fIapp-args\fR...]
+.br
+.B dsh web
+[\fB\-\-host\fR \fIaddress\fR] [\fB\-\-port\fR \fIport\fR] [\fB\-\-no\-open\fR]
+.SH DESCRIPTION
+DeepSeek Harness is an open-source agent harness built on an
+everything-is-a-plugin architecture.  The
+.B dsh
+launcher boots a named profile: an ordered stack of plugin-bundle patch
+layers under the user's own overrides.  The
+.B web
+profile serves the browser user interface, by default at
+http://127.0.0.1:3080.
+.PP
+This package installs the Web UI as a systemd \fIuser\fR service named
+\fBdsh-web\fR.  It runs as the logged-in user, never as root, and keeps its
+state under \fI~/.dsh\fR.
+.SH COMMANDS
+.TP
+.B web
+Boot the Web UI profile.  Accepts
+.BR \-\-host ,
+.BR \-\-port ,
+.BR \-\-no\-open ,
+.BR \-\-public\-url ,
+and TLS flags; see \fBdsh web \-\-help\fR.
+.TP
+.B headless
+Answer one task, print the result, and exit.
+.TP
+.B plugin
+Manage a profile's plugin dependencies by forwarding to pnpm:
+\fBdsh plugin \-\-profile\fR \fIname\fR \fIpnpm-args\fR.
+.TP
+.B \-\-version
+Print the installed version.
+.SH SERVICE
+.TP
+.B systemctl \-\-user status dsh-web
+Show the user service state.
+.TP
+.B systemctl \-\-user enable \-\-now dsh-web
+Enable and start the Web UI for the current user.
+.TP
+.B journalctl \-\-user \-u dsh-web \-f
+Follow the service log.
+.TP
+.B dsh-web-url
+Print the tokenized URL that opens the current Web UI session.
+.PP
+The first visit must use the tokenized URL printed to the user journal and
+returned by \fBdsh\-web\-url\fR; a successful visit mints a persistent browser
+cookie, after which the clean loopback URL works.  The optional file
+\fI~/.config/dsh/web.env\fR supplies environment variables
+such as \fBDEEPSEEK_API_KEY\fR and \fBDSH_HOME\fR to the service.  Use
+\fBsystemctl \-\-user edit dsh-web\fR to change the bind address or port.
+.SH FILES
+.TP
+.I ~/.dsh
+User sessions, profiles, credentials, and settings.
+.TP
+.I ~/.config/dsh/web.env
+Optional service environment.
+.TP
+.I /usr/lib/systemd/user/dsh-web.service
+The user unit (never a system unit).
+.SH ENVIRONMENT
+.TP
+.B DSH_HOME
+Override the harness home directory (default \fI~/.dsh\fR).
+.TP
+.B DSH_NODE
+Node.js executable used by the \fB/usr/bin/dsh\fR launcher.
+.TP
+.B DEEPSEEK_API_KEY
+API key read by the model provider configuration.
+.SH SEE ALSO
+.BR systemctl (1),
+.BR systemd.unit (5),
+.BR journalctl (1)
+.PP
+Upstream documentation: https://github.com/deepseek-ai/deepseek-harness

@@ -1,0 +1,116 @@
+DeepSeek Harness (dsh) — Debian/Ubuntu package notes
+====================================================
+
+What this package installs
+--------------------------
+  /usr/bin/dsh                       launcher (requires system Node.js >= 24.9)
+  /usr/bin/dsh-web-url               prints the current tokenized Web UI URL
+  /usr/lib/dsh/app/                  pinned DSH production installation
+  /usr/lib/systemd/user/dsh-web.service
+                                     systemd *user* unit for the Web UI
+  /usr/share/doc/deepseek-harness/   this note, copyright, third-party notices
+  /usr/share/man/man1/dsh.1.gz
+
+Runtime requirement
+-------------------
+This package does not bundle Node.js. It depends on the system package
+`nodejs (>= 24.9.0)`. Ubuntu 24.04 ships Node.js 18, which is too old, so
+install Node 24 from NodeSource before installing this package:
+
+  sudo apt-get install -y curl ca-certificates
+  curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
+  sudo apt-get install -y nodejs
+  node --version        # must be >= 24.9.0
+
+If `apt` refuses the package with an unmet `nodejs (>= 24.9.0)` dependency,
+that check is doing its job: fix Node first, then reinstall.
+
+The user service (never root)
+-----------------------------
+dsh-web is a systemd *user* unit. It runs as the user who enables it, with
+that user's $HOME and ~/.dsh. There is no system unit in /lib/systemd/system,
+so nothing starts as root and no root-run server is listening on port 3080.
+
+If the package is installed with sudo (or pkexec), the maintainer script
+enables and starts the unit for the installing user automatically. If it
+cannot reach that user's systemd manager (common in containers and image
+builds), the unit is still installed; start it after logging in:
+
+  systemctl --user enable --now dsh-web
+
+Useful commands:
+
+  systemctl --user status dsh-web
+  systemctl --user restart dsh-web
+  systemctl --user stop dsh-web
+  journalctl --user -u dsh-web -f
+  dsh-web-url
+
+The Web UI requires a per-process launch token on the first visit. The service
+prints the tokenized URL to the user journal at every start; dsh-web-url prints
+the most recent one. Opening that URL mints a persistent browser cookie, after
+which http://127.0.0.1:3080 works directly.
+
+The service starts when the user logs in and stops when the user's systemd
+manager stops (normally at logout). To keep it running without an active
+login, enable lingering for that user explicitly:
+
+  sudo loginctl enable-linger <user>
+
+Configuration
+-------------
+The unit listens on 127.0.0.1:3080 by default and passes --no-open. Put
+environment variables such as DEEPSEEK_API_KEY or DSH_HOME in the optional
+file:
+
+  ~/.config/dsh/web.env
+
+To change the bind address or port, use a drop-in instead of editing the
+packaged unit:
+
+  systemctl --user edit dsh-web
+  # [Service]
+  # ExecStart=
+  # ExecStart=/usr/bin/dsh web --no-open --host 0.0.0.0 --port 3080
+
+The unit deliberately binds loopback only. For remote access prefer an SSH
+tunnel over binding a public interface:
+
+  ssh -L 3080:127.0.0.1:3080 user@host
+
+CLI usage
+---------
+  dsh web                 start the Web UI in the foreground
+  dsh web --help          Web UI flags (--host, --port, --no-open, ...)
+  dsh --version           version
+  dsh plugin --help       plugin management (needs pnpm on PATH)
+
+User data
+---------
+Sessions, profiles, credentials, and settings live in ~/.dsh (or $DSH_HOME).
+They belong to the user, not to the package, and are never removed by
+`apt remove --purge`. Remove ~/.dsh yourself if you want a clean reset.
+
+Package name and conflict
+-------------------------
+The package is named deepseek-harness, not dsh: Debian/Ubuntu already have an
+unrelated package called `dsh` (distributed shell) that owns /usr/bin/dsh.
+This package Conflicts/Replaces it. If that package is installed, apt asks to
+remove it before installing this one.
+
+Removal
+-------
+  sudo apt remove deepseek-harness
+  # or, to also drop package-owned configuration (user data is still kept):
+  sudo apt purge deepseek-harness
+
+Removal stops and disables dsh-web for the installing user. Other users who
+enabled the unit themselves should run `systemctl --user disable --now dsh-web`
+before the package is removed.
+
+Source
+------
+Upstream: https://github.com/deepseek-ai/deepseek-harness
+The exact tag and commit used for this build are recorded in
+/usr/share/doc/deepseek-harness/BUILD-INFO.json and in the package's
+X-DSH-Source-Commit control field.
