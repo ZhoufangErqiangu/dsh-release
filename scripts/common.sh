@@ -44,22 +44,22 @@ node_bin() {
   command -v node 2>/dev/null || true
 }
 
-# pnpm_bin prints the pnpm executable. The repository pins pnpm@11.28.5; the
-# build verifies the version against package.json so a stale global pnpm fails
+# pnpm_bin prints the pnpm executable. After the first install the pinned
+# checkout carries the exact pnpm from packageManager, and it is preferred over
+# a stale global pnpm that merely happens to be earlier on PATH. build-source.sh
+# still verifies the version against package.json, so a stale local pnpm fails
 # loudly instead of producing a subtly different dependency tree.
 pnpm_bin() {
   if [ -n "${PNPM_BIN:-}" ]; then
     printf '%s\n' "$PNPM_BIN"
     return 0
   fi
-  if command -v pnpm >/dev/null 2>&1; then
-    command -v pnpm
-    return 0
-  fi
-  # After the first `pnpm install`, the pinned pnpm is available inside the
-  # source checkout even when it is not on PATH (corepack not enabled).
   if [ -x "$SRC/node_modules/.bin/pnpm" ]; then
     printf '%s\n' "$SRC/node_modules/.bin/pnpm"
+    return 0
+  fi
+  if command -v pnpm >/dev/null 2>&1; then
+    command -v pnpm
     return 0
   fi
 }
