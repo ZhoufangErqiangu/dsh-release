@@ -44,8 +44,10 @@ dist/release.json
 ```
 
 发布版本是 `v0.2.2-rc.5-alex.1`（tag / GitHub Release 用），对应的 Debian 版本是
-`0.2.2~rc.5-alex.1`。完整的版本规则和发布流程见
-[`docs/release.md`](docs/release.md)。
+`0.2.2~rc.5-alex.1`。GitHub Release 的资产名只保留 `[A-Za-z0-9._-]`，所以下载到的
+文件名是 `deepseek-harness_0.2.2.rc.5-alex.1_amd64.deb`（`~` 变 `.`）；包内
+`Version` 仍是 `0.2.2~rc.5-alex.1`，workflow 会生成与资产名匹配的 `.sha256`。
+完整的版本规则和发布流程见 [`docs/release.md`](docs/release.md)。
 
 安装（用 `sudo` 时，维护脚本会自动为这个 sudo 用户 enable + start 用户服务）：
 

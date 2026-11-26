@@ -274,6 +274,32 @@ jobs:
           [ "$actual_sha" = "$manifest_sha" ] || { echo "::error::package sha256 '$actual_sha' != manifest '$manifest_sha'"; exit 1; }
           echo "publishing $tag ($version, sha256 $actual_sha)"
 
+      # GitHub release asset names only keep [A-Za-z0-9._-]; a Debian version
+      # like 0.2.2~rc.5 would be stored as 0.2.2.rc.5. Prepare the upload names
+      # and matching checksum/manifest here, so users can verify what they
+      # actually download. The version inside the .deb is unchanged.
+      - name: Prepare GitHub-safe asset names
+        run: |
+          set -euo pipefail
+          mkdir -p release/upload
+          deb="$(ls release/dist/*.deb)"
+          base="$(basename "$deb")"
+          safe="$(printf '%s' "$base" | sed 's/[^A-Za-z0-9._-]/./g')"
+          if [ "$safe" != "$base" ]; then
+            echo "::notice::GitHub stores '$base' as '$safe'"
+          fi
+          cp "$deb" "release/upload/$safe"
+          ( cd release/upload && sha256sum "$safe" > "$safe.sha256" )
+          node -e '
+            const fs = require("node:fs")
+            const [src, file, out] = process.argv.slice(1)
+            const manifest = JSON.parse(fs.readFileSync(src, "utf8"))
+            manifest.file = file
+            fs.writeFileSync(out, JSON.stringify(manifest, null, 2) + "\n")
+          ' release/dist/release.json "$safe" release/upload/release.json
+          ( cd release/upload && sha256sum -c ./*.sha256 )
+          ls -l release/upload
+
       - name: Create or update the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -281,7 +307,7 @@ jobs:
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
-          files=(release/dist/*.deb release/dist/*.sha256 release/dist/release.json)
+          files=(release/upload/*.deb release/upload/*.sha256 release/upload/release.json)
           ref="$(sed -n "s/^DSH_REF='\(.*\)'$/\1/p" release/build/source.env | head -n1)"
           commit="$(sed -n "s/^DSH_COMMIT='\([0-9a-f]*\)'$/\1/p" release/build/source.env | head -n1)"
           deb_version="$(sed -n "s/^DEB_FULL_VERSION='\(.*\)'$/\1/p" release/build/source.env | head -n1)"

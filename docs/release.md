@@ -161,6 +161,11 @@ ref/commit/version、deb 版本、文件名和 sha256 放在一个文件里，�
 `BUILD-INFO.json`（安装到 `/usr/share/doc/deepseek-harness/`）也新增了
 `release` 字段，安装后可直接核对发布版本。
 
+注意：GitHub Release 的资产名只保留 `[A-Za-z0-9._-]`，Debian 版本里的 `~` 会被
+存成 `.`（`deepseek-harness_0.2.2.rc.5-alex.1_amd64.deb`）。release job 会按实际
+资产名生成同名的 `.sha256`，并同步 `release.json` 的 `file`；deb 内部的 `Version`
+仍是 `0.2.2~rc.5-alex.1`，安装和升级不受影响。
+
 ## 5. CI：tag 自动构建与发布
 
 `.github/workflows/build-deb.yml` 两种入口：
